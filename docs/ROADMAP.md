@@ -58,8 +58,19 @@ builds on the previous one. ✅ = shipped.
 - Wave function collapse: procedural levels
 
 ## Platform
+- ✅ Lab mode: tool hotbar, Guide with self-checking experiments, Live Math, focus mode
+- ✅ Sandbox kit: paintable rock/walls shared by chapters; food for fish and ants
+- ✅ Windows support (CI on Ubuntu, Windows, macOS); built-in equation renderer
+- Save and share setups: walls, food, parameters and seed in one small file
+- Hover a term in the Deep dive to highlight it in the simulation
+- Web/mobile edition (see "Beyond the desktop" below)
 - Replays: record inputs, scrub the timeline backwards (possible because runs are deterministic)
-- Live equations: hover a term in the Deep dive to highlight it in the simulation
 - Challenges with scoring per chapter
 - Zero-copy CUDA → OpenGL interop for 100k+ agents
 - Flatpak packaging
+
+## Beyond the desktop
+
+Chapters only talk to the engine through `Simulation` (step/draw/tools/live math), and
+drawing goes through the numpy `Scene` API. That boundary is what a browser or phone
+edition would re-implement.

@@ -7,8 +7,11 @@ distance functions as documented by Inigo Quilez (MIT).
 HEADER = """#version 330
 uniform vec2 u_scale;
 uniform vec2 u_offset;
+uniform vec2 u_rot;      // (cos, sin) of the view rotation (chase cameras); (1, 0) = none
 uniform float u_px;      // world units per physical pixel
 float cov(float d) { return 1.0 - smoothstep(-0.5 * u_px, 0.5 * u_px, d); }
+vec2 view_rot(vec2 p) { return vec2(u_rot.x * p.x - u_rot.y * p.y, u_rot.y * p.x + u_rot.x * p.y); }
+vec4 to_clip(vec2 p) { return vec4(view_rot(p) * u_scale + u_offset, 0.0, 1.0); }
 """
 
 NOISE = """
@@ -104,7 +107,7 @@ void main() {
     v_len = len;
     v_hw = hw;
     v_color = vec4(i_color.rgb, i_color.a * clamp(i_w * 0.5 / hw, 0.0, 1.0));
-    gl_Position = vec4((i_a + dir * lx + nrm * ly) * u_scale + u_offset, 0.0, 1.0);
+    gl_Position = to_clip(i_a + dir * lx + nrm * ly);
 }
 """
 LINES_FS = """
@@ -127,7 +130,7 @@ void main() {
     float ext = i_r + i_soft + u_px * 2.0;
     v_p = in_corner * ext;
     v_r = i_r; v_ring = i_ring; v_soft = i_soft; v_color = i_color;
-    gl_Position = vec4((i_c + v_p) * u_scale + u_offset, 0.0, 1.0);
+    gl_Position = to_clip(i_c + v_p);
 }
 """
 CIRCLES_FS = """
@@ -155,7 +158,7 @@ void main() {
     float ext = max(i_size.x, i_size.y) * 0.62 + u_px * 2.0;
     v_q = in_corner * ext;
     v_size = i_size; v_color = i_color; v_phase = i_phase;
-    gl_Position = vec4((i_pos + rot(v_q, i_angle)) * u_scale + u_offset, 0.0, 1.0);
+    gl_Position = to_clip(i_pos + rot(v_q, i_angle));
 }
 """
 SPRITES_FS = """
@@ -302,7 +305,7 @@ in vec2 in_pos; in vec4 in_color;
 out vec2 v_world; out vec4 v_color;
 void main() {
     v_world = in_pos; v_color = in_color;
-    gl_Position = vec4(in_pos * u_scale + u_offset, 0.0, 1.0);
+    gl_Position = to_clip(in_pos);
 }
 """
 MESH_FS = """
@@ -333,7 +336,7 @@ out vec2 v_world;
 void main() {
     v_uv = in_corner * 0.5 + 0.5;
     v_world = mix(u_bounds.xy, u_bounds.zw, v_uv);
-    gl_Position = vec4(v_world * u_scale + u_offset, 0.0, 1.0);
+    gl_Position = to_clip(v_world);
 }
 """
 IMAGE_FS = """
@@ -432,7 +435,8 @@ vec3 voidbg(vec2 w) {
     return c + vec3(0.035, 0.050, 0.080) * dotg;
 }
 void main() {
-    vec2 w = (v_ndc - u_offset) / u_scale;
+    vec2 q = (v_ndc - u_offset) / u_scale;               // view coordinates
+    vec2 w = vec2(u_rot.x * q.x + u_rot.y * q.y, -u_rot.y * q.x + u_rot.x * q.y);
     float gy = clamp((w.y - u_world.y) / (u_world.w - u_world.y), 0.0, 1.0);
     vec3 c;
     if (u_style == 1) c = water(w, u_time, gy);

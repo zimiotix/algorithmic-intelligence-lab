@@ -9,3 +9,10 @@ status = "draft"         # "ready" once intro, advanced and tests are done
 controls = [
   ["Left click", "What clicking does"],
 ]
+reality = """
+What does this model leave out compared with the real thing? Be honest and specific:
+this text appears in the Lab's Guide under "Model vs. nature".
+"""
+
+[glossary]   # every non-parameter symbol used in "The Math", in plain words
+'\mathbf{x}' = "Position of an agent"

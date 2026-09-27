@@ -16,7 +16,17 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
-from ailab.core import HudItem, InputState, Overlay, Param, Simulation
+from ailab.core import (
+    Experiment,
+    HudItem,
+    InputState,
+    LiveEq,
+    LiveValue,
+    Overlay,
+    Param,
+    Simulation,
+    Tool,
+)
 from ailab.core.memory import (
     FieldMemory,
     Grid2D,
@@ -25,6 +35,8 @@ from ailab.core.memory import (
     grid_cell,
     grid_inside,
 )
+from ailab.core.params import fmt
+from ailab.core.sandbox import ObstacleGrid, obstacle_at
 from ailab.render import palette as pal
 
 WIDTH, HEIGHT, CELL = 160.0, 90.0, 0.5
@@ -48,14 +60,6 @@ class Colony:
     homing: float
     dt: float
     seed: int
-
-
-@wp.func
-def is_blocked(blocked: wp.array2d(dtype=wp.uint8), g: Grid2D, p: wp.vec2) -> bool:
-    c = grid_cell(g, p)
-    if not grid_inside(g, c):
-        return True
-    return blocked[c[1], c[0]] != wp.uint8(0)
 
 
 @wp.func
@@ -116,7 +120,7 @@ def ant_step(P: Colony, g: Grid2D, pos: wp.array(dtype=wp.vec2), ang: wp.array(d
 
     # 3. act: move, or turn around at walls
     step = wp.vec2(wp.cos(a), wp.sin(a)) * (P.speed * P.dt)
-    if is_blocked(blocked, g, p + step):
+    if obstacle_at(blocked, g, p + step):
         a = a + 3.14159265 + (wp.randf(rng) - 0.5) * 1.2
     else:
         p = p + step
@@ -233,35 +237,32 @@ def build_world(name: str, rng: np.random.Generator, nx: int, ny: int):
     return blocked.astype(np.uint8), food, np.array(nest, np.float32)
 
 
-def _rock_texture(nx, ny, seed):
-    """Base rock colour; the mask shader adds the detailed noise and lighting."""
-    rng = np.random.default_rng(seed + 99)
-    fine = rng.random((ny, nx))
-    t = 0.92 + 0.08 * fine
-    rgb = np.stack([0.19 * t, 0.16 * t, 0.14 * t], -1)
-    return rgb.astype(np.float32)
-
-
 class Sim(Simulation):
     world = (0.0, 0.0, WIDTH, HEIGHT)
     background = "soil"
     PARAMS = [
         Param("scenario", "Scenario", "Open field", choices=SCENARIOS, restart=True,
               help="Double bridge is the classic experiment: two routes, one shorter."),
-        Param("n_ants", "Ants", 1500, 50, 20000, 50, "", "N", restart=True, cpu_default=600),
-        Param("speed", "Walking speed", 10.0, 2.0, 25.0, 0.5, "", "v", "u/s"),
+        Param("n_ants", "Ants", 1500, 50, 20000, 50,
+              "Colony size. More ants find food sooner and keep trails fresher.", "N",
+              restart=True, cpu_default=600),
+        Param("speed", "Walking speed", 10.0, 2.0, 25.0, 0.5,
+              "How fast every ant walks.", "v", "u/s"),
         Param("sensor_angle", "Sensor angle", 35.0, 5.0, 90.0, 1.0,
               "Angle between the front sensor and the side sensors.", "\\theta_s", "deg"),
         Param("sensor_dist", "Sensor distance", 2.5, 0.5, 8.0, 0.1,
               "How far ahead the sensors reach.", "d_s"),
-        Param("turn_rate", "Turn rate", 8.0, 0.5, 20.0, 0.5, "", "\\omega", "rad/s"),
+        Param("turn_rate", "Turn rate", 8.0, 0.5, 20.0, 0.5,
+              "How sharply an ant turns toward a stronger smell. Low: it overshoots trails.",
+              "\\omega", "rad/s"),
         Param("wander", "Wander", 1.5, 0.0, 6.0, 0.1,
               "Random turning. Too little: no exploring. Too much: no trail following.",
               "\\sigma"),
         Param("homing", "Path integration", 0.5, 0.0, 2.0, 0.05,
               "Loaded ants also steer toward home by dead reckoning. 0 = pheromone only "
               "(try it: ants can get stuck circling in an 'ant mill').", "h"),
-        Param("deposit", "Pheromone per second", 1.0, 0.0, 5.0, 0.05, "", "q"),
+        Param("deposit", "Pheromone per second", 1.0, 0.0, 5.0, 0.05,
+              "How much scent each ant lays. At 0 the colony has no shared memory.", "q"),
         Param("trail_tau", "Ant memory", 20.0, 1.0, 120.0, 1.0,
               "Marks weaken with time since the ant left home or found food.", "\\tau_a", "s"),
         Param("evap_tau", "Evaporation time", 40.0, 2.0, 300.0, 1.0,
@@ -276,6 +277,59 @@ class Sim(Simulation):
         Overlay("memory", "Ant memory", False, "Tint ants by time since they left home/food."),
         Overlay("ants", "Ants", True),
     ]
+    TOOLS = [
+        Tool("wall", "Wall", "wall", "Drag to build walls", "Drag to erase walls", radius=1.6,
+             tip="Block a busy trail and watch the colony find a way around."),
+        Tool("food", "Food", "food", "Click to drop a food pile", "Click to remove food",
+             radius=3.0, tip="Put food far from the nest: scouts find it by chance, then a "
+                             "trail builds up."),
+        Tool("inspect", "Inspect", "inspect", "Click an ant to follow it",
+             tip="The sensors overlay and Live Math explain this one ant."),
+    ]
+    EXPERIMENTS = [
+        Experiment("deliver", "The first supply line", "Just watch the Open field for a while.",
+                   "No ant knew the way. Ants that found food marked the trail home; others "
+                   "followed and strengthened it. The map lives in the dirt: stigmergy.",
+                   check="exp_deliver"),
+        Experiment("bridge", "Win the double bridge",
+                   "Set Scenario to Double bridge and wait about a minute.",
+                   "Both routes get pheromone, but the short one is refreshed more often, so "
+                   "it wins. Goss and Deneubourg saw real Argentine ants do this in 1989.",
+                   check="exp_bridge"),
+        Experiment("cut", "Cut a busy trail",
+                   "Once a trail glows, use Wall (1) to block it. Keep watching.",
+                   "Blocked ants wander, find a way around, and the new route is reinforced "
+                   "while the old one evaporates. Forgetting matters as much as remembering.",
+                   check="exp_cut"),
+        Experiment("newfood", "Open a new food source",
+                   "With Food (2), drop a pile far from the nest.",
+                   "A scout finds it by chance; one loaded trip home lays the first trail, "
+                   "and the colony switches over in a positive feedback loop.",
+                   check="exp_newfood"),
+        Experiment("mill", "Make an ant mill",
+                   "In Open field, set Path integration (h) to 0 and watch loaded ants.",
+                   "Following only each other's trail, ants can circle forever. Army ants "
+                   "really do this. Real ants also use a sense of direction home, as h does."),
+        Experiment("amnesia", "A colony without memory",
+                   "Set Evaporation time (τ_e) to 2 s and compare deliveries.",
+                   "When marks vanish faster than a round trip, no trail can form. "
+                   "Stigmergy needs memory that outlasts the journey."),
+    ]
+    LIVE_MATH = [
+        LiveEq("smell", "What its three sensors smell", r"S = \ln\!\big(1 + \textstyle\sum c\big)"
+               r" + \text{cues}",
+               "S: one sensor's reading · c: pheromone in the 3×3 cells under it · "
+               "ln: natural logarithm (senses respond to ratios) · cues: food or nest nearby"),
+        LiveEq("turn", "Is the strongest smell ahead?", r"S_F \ge \max(S_L,\, S_R)",
+               "S_L, S_F, S_R: readings of the left, front and right sensors"),
+        LiveEq("mark", "How strongly it marks", r"\Delta c = q\, e^{-t_a/\tau_a}\,\Delta t",
+               "Δc: pheromone laid this step · q: pheromone per second · t_a: time since it "
+               "left the nest or found food · τ_a: ant memory · Δt: one step (1/60 s)"),
+        LiveEq("home", "The pull toward home",
+               r"\Delta\theta = h\,\sin(\theta_{nest} - \theta)\,\Delta t",
+               "Δθ: extra turn this step · h: path-integration strength · "
+               "θ_nest: direction of the nest · θ: its heading"),
+    ]
 
     def reset(self, seed: int) -> None:
         super().reset(seed)
@@ -283,10 +337,16 @@ class Sim(Simulation):
         dev = self.device
         self.field = FieldMemory(self.world, CELL, channels=2, device=dev)
         nx, ny = self.field.nx, self.field.ny
-        self.blocked_np, food_np, self.nest = build_world(self.p.scenario, rng, nx, ny)
+        blocked, food_np, self.nest = build_world(self.p.scenario, rng, nx, ny)
+        self.rocks = ObstacleGrid(self.world, CELL, dev, border=True)
+        self.rocks.set(blocked)
+        self.rocks.protect(self.nest, 5.0)          # never bury the nest
         self.food_total = int(food_np.sum())
         self.food = wp.array(food_np, dtype=int, device=dev)
-        self.field.set_blocked(self.blocked_np)
+        self.field.set_blocked(self.rocks.mask)
+        self.user_food = np.zeros((ny, nx), bool)     # where the learner dropped food
+        self.user_food_added = 0
+        self.cut_at = None                            # deliveries when a trail was cut
         self.claims = wp.full((ny, nx), NO_CLAIM, dtype=int, device=dev)
         n = int(self.p.n_ants)
         a = rng.uniform(0, 2 * np.pi, n)
@@ -298,10 +358,9 @@ class Sim(Simulation):
         self.timer = wp.zeros(n, dtype=float, device=dev)
         self.delivered = wp.zeros(1, dtype=int, device=dev)
         self.leg_phase = rng.uniform(0, 2 * np.pi, n).astype(np.float32)
-        self.rock_rgb = _rock_texture(nx, ny, seed)
         self.seed_jitter = rng.uniform(-0.3, 0.3, (ny, nx, 2)).astype(np.float32)
         self._rock_img = None
-        self._paint_prev = None
+        self._rock_version = -1
         self.focus = min(self.focus, n - 1)
         self._host = None
         self._apply_field_params()
@@ -326,45 +385,43 @@ class Sim(Simulation):
         return c
 
     # ------------------------------------------------------------ interaction
-    def _paint(self, inp: InputState) -> None:
-        m = inp.mouse
-        painting = (m is not None and ({"left", "right"} & inp.buttons)
-                    and not ({"Shift", "Ctrl"} & inp.keys))
+    def _use_tools(self, inp: InputState) -> None:
+        tool = self.tool_of(inp)
         for button, at in inp.clicks:
-            if button == "left" and "Ctrl" in inp.keys:
+            if tool == "inspect" and button == "left":
                 xy = self.pos.numpy()
                 self.focus = int(np.argmin(np.sum((xy - np.asarray(at)) ** 2, axis=1)))
-            elif button == "left" and "Shift" in inp.keys:
+            elif tool == "food":
                 food = self.food.numpy()
-                X, Y = _centers(self.field.nx, self.field.ny)
-                disk = _capsule(X, Y, at, at, 3.0) & (self.blocked_np == 0)
-                food[disk] += 8
-                self.food_total += int(8 * disk.sum())
+                disk = self.rocks.capsule(at, at, 3.0) & (self.rocks.mask == 0)
+                if button == "left":
+                    food[disk] += 8
+                    self.food_total += int(8 * disk.sum())
+                    self.user_food |= disk
+                    self.user_food_added += int(8 * disk.sum())
+                else:
+                    food[disk] = 0
                 self.food = wp.array(food, dtype=int, device=self.device)
-        if not painting:
-            self._paint_prev = None
-            return
-        a = self._paint_prev if self._paint_prev is not None else m
-        X, Y = _centers(self.field.nx, self.field.ny)
-        brush = _capsule(X, Y, a, m, 1.6)
-        brush &= ~_capsule(X, Y, self.nest, self.nest, 5.0)     # never bury the nest
-        if "left" in inp.buttons:
-            self.blocked_np[brush] = 1
+        if tool == "wall" and inp.mouse is not None and {"left", "right"} & inp.buttons:
+            building = "left" in inp.buttons
+            before = self.rocks.mask.copy() if building else None
+            if self.rocks.stroke(inp.mouse, 1.6, 1 if building else 0):
+                self.field.set_blocked(self.rocks.mask)
+                if building and self.cut_at is None:
+                    new = (self.rocks.mask == 1) & (before == 0)
+                    trail = self.field.numpy()[FOOD]
+                    if new.any() and trail[new].max() > 2.0:     # it landed on a busy trail
+                        self.cut_at = int(self.delivered.numpy()[0])
         else:
-            self.blocked_np[brush] = 0
-            self.blocked_np[0, :] = self.blocked_np[-1, :] = 1
-            self.blocked_np[:, 0] = self.blocked_np[:, -1] = 1
-        self.field.set_blocked(self.blocked_np)
-        self._rock_img = None
-        self._paint_prev = m
+            self.rocks.end_stroke()
 
     def step(self, inp: InputState) -> None:
-        self._paint(inp)
+        self._use_tools(inp)
         dev, g, f = self.device, self.field.grid, self.field
         self.claims.fill_(NO_CLAIM)
         wp.launch(ant_step, dim=len(self.pos),
                   inputs=[self._colony(), g, self.pos, self.ang, self.carry, self.timer,
-                          f.value, f.deposit, self.food, f.blocked, self.claims,
+                          f.value, f.deposit, self.food, self.rocks.blocked, self.claims,
                           self.delivered], device=dev)
         wp.launch(ant_pickup, dim=len(self.pos),
                   inputs=[g, self.pos, self.ang, self.carry, self.timer, self.food,
@@ -382,7 +439,7 @@ class Sim(Simulation):
 
     def state_arrays(self):
         h = self._fetch()
-        return [h["pos"], h["ang"], h["carry"], h["field"], h["food"]]
+        return [h["pos"], h["ang"], h["carry"], h["field"], h["food"], self.rocks.mask]
 
     # ------------------------------------------------------------------ draw
     def draw(self, s) -> None:
@@ -392,11 +449,9 @@ class Sim(Simulation):
         s.background("soil")
         b = self.world
 
-        if self._rock_img is None:
-            img = np.zeros(self.blocked_np.shape + (4,), np.float32)
-            img[..., :3] = self.rock_rgb
-            img[..., 3] = self.blocked_np
-            self._rock_img = img
+        if self._rock_version != self.rocks.version:
+            self._rock_img = self.rocks.rock_image(seed=self.seed)
+            self._rock_version = self.rocks.version
         k = 0.22
         home = (1 - np.exp(-k * field[HOME])) if self.show.home else 0 * field[HOME]
         food_t = (1 - np.exp(-k * field[FOOD])) if self.show.food_trail else 0 * field[FOOD]
@@ -437,14 +492,15 @@ class Sim(Simulation):
             self._draw_sensors(s, pos[f], ang[f], carry[f], field, food)
             s.circles(pos[f], 1.6, pal.rgba("#ffffff", 0.9, 1.5), ring=0.12)
 
-    def _draw_sensors(self, s, p, a, c, field, food) -> None:
+    def _sense(self, p, a, c, field, food):
+        """Host mirror of the kernel's three sensors: (points, values)."""
         P = self.p
         sa, sd = np.radians(P.sensor_angle), P.sensor_dist
         pts = [p + sd * np.array([np.cos(a + o), np.sin(a + o)]) for o in (sa, 0.0, -sa)]
         vals = []
         ch = FOOD if c == 0 else HOME
         for q in pts:
-            ix, iy = int(q[0] / CELL), int(q[1] / CELL)
+            ix, iy = int(np.floor(q[0] / CELL)), int(np.floor(q[1] / CELL))
             y0, y1 = max(iy - 1, 0), min(iy + 2, field.shape[1])
             x0, x1 = max(ix - 1, 0), min(ix + 2, field.shape[2])
             v = np.log1p(field[ch, y0:y1, x0:x1].sum())      # same rule as the kernel
@@ -454,7 +510,10 @@ class Sim(Simulation):
                 dn = np.hypot(*(q - self.nest))
                 v += 6.0 * max(0.0, 1 - dn / 10.0)
             vals.append(v)
-        vals = np.array(vals)
+        return pts, np.array(vals)
+
+    def _draw_sensors(self, s, p, a, c, field, food) -> None:
+        pts, vals = self._sense(p, a, c, field, food)
         best = int(np.argmax(vals)) if vals.max() > 0 else 1
         rel = vals / max(vals.max(), 1e-6)
         for k, q in enumerate(pts):
@@ -474,3 +533,59 @@ class Sim(Simulation):
             HudItem("food left", f"{left:,} / {self.food_total:,}"),
             HudItem("time", f"{self.t:.0f} s"),
         ]
+
+    # ------------------------------------------------------------- live math
+    def live_math(self) -> dict[str, LiveValue]:
+        h = self._fetch()
+        f, P = self.focus, self.p
+        p, a, c = h["pos"][f], float(h["ang"][f]), int(h["carry"][f])
+        _, (sl, sf, sr) = self._sense(p, a, c, h["field"], h["food"])
+        trail = "home trail" if c else "food trail"
+        out = {"smell": LiveValue(f"S_L {fmt(sl)}   S_F {fmt(sf)}   S_R {fmt(sr)}", None,
+                                  f"{'carrying food' if c else 'searching'}: it smells the "
+                                  f"{trail}")}
+        ahead = sf >= max(sl, sr)
+        side = "left" if sl > sr else ("right" if sr > sl else "nowhere: a tie")
+        out["turn"] = LiveValue(f"S_F = {fmt(sf)} {'≥' if ahead else '<'} max = "
+                                f"{fmt(max(sl, sr))}", ahead,
+                                "straight on: the best smell is ahead" if ahead
+                                else f"turn {side}, toward the stronger smell")
+        ta = float(h["timer"][f])
+        rate = P.deposit * np.exp(-ta / P.trail_tau)
+        out["mark"] = LiveValue(f"t_a = {fmt(ta, 1)} s → {fmt(P.deposit)}·e^(−{fmt(ta, 1)}/"
+                                f"{fmt(P.trail_tau, 0)}) = {fmt(rate)} per s", None,
+                                "fresh from the nest or food: strong marks" if rate > 0.5 * P.deposit
+                                else "long trip so far: faint marks (long routes lose)")
+        if c:
+            to = self.nest - p
+            err = float(np.arctan2(np.sin(np.arctan2(to[1], to[0]) - a),
+                                   np.cos(np.arctan2(to[1], to[0]) - a)))
+            out["home"] = LiveValue(f"nest is {np.degrees(err):+.0f}° off → turn "
+                                    f"{fmt(P.homing * np.sin(err))} rad/s", None,
+                                    "path integration: it knows roughly where home is")
+        else:
+            out["home"] = LiveValue("not carrying food: no pull home", None,
+                                    "searching ants go wherever the smell leads")
+        return out
+
+    # ------------------------------------------------------------ experiments
+    def exp_deliver(self) -> bool:
+        return self._fetch()["delivered"] >= 100
+
+    def exp_bridge(self) -> bool:
+        if self.p.scenario != "Double bridge" or self.t < 30:
+            return False
+        pos = self._fetch()["pos"]
+        mid = (pos[:, 0] > 35) & (pos[:, 0] < 125)
+        short = int((mid & (pos[:, 1] > 52)).sum())
+        long_ = int((mid & (pos[:, 1] < 30)).sum())
+        return short + long_ >= 40 and short >= 3 * long_
+
+    def exp_cut(self) -> bool:
+        return self.cut_at is not None and self._fetch()["delivered"] >= self.cut_at + 60
+
+    def exp_newfood(self) -> bool:
+        if not self.user_food_added:
+            return False
+        left = int(self._fetch()["food"][self.user_food].sum())
+        return self.user_food_added - left >= 20

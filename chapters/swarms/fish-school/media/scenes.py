@@ -2,8 +2,24 @@
     uv run tools/render_media.py swarms.fish-school
 """
 
-from manim import (BLUE, DOWN, GREEN, ORANGE, RED, UP, Arrow, Circle, Create, Dot,
-                   FadeIn, GrowArrow, MathTex, Scene, VGroup, Write)
+from manim import (
+    BLUE,
+    DOWN,
+    GREEN,
+    ORANGE,
+    RED,
+    UP,
+    Arrow,
+    Circle,
+    Create,
+    Dot,
+    FadeIn,
+    GrowArrow,
+    MathTex,
+    Scene,
+    VGroup,
+    Write,
+)
 
 
 class ThreeZones(Scene):

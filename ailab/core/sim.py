@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .params import Overlay, Param, Values
+from .params import Experiment, LiveEq, LiveValue, Overlay, Param, Tool, Values
 
 
 @dataclass
@@ -27,6 +27,7 @@ class InputState:
     keys: frozenset[str] = frozenset()             # held keys: "Left", "Up", "Shift", "C", ...
     clicks: tuple[tuple[str, tuple[float, float]], ...] = ()   # presses since last step
     key_presses: tuple[str, ...] = ()              # keys pressed since last step
+    tool: str = ""                                 # key of the active Tool ("" = default)
 
     @property
     def mods(self) -> frozenset[str]:
@@ -61,6 +62,9 @@ class Simulation:
     seeded: bool = True
     PARAMS: list[Param] = []
     OVERLAYS: list[Overlay] = []
+    TOOLS: list[Tool] = []              # hotbar; the first one is active at start
+    EXPERIMENTS: list[Experiment] = []  # guided things to try, shown in the Guide
+    LIVE_MATH: list[LiveEq] = []        # equations evaluated live for the focus agent
 
     def __init__(self, ctx: SimContext):
         self.ctx = ctx
@@ -94,6 +98,19 @@ class Simulation:
     def hud(self) -> list[HudItem]:
         return []
 
+    def live_math(self) -> dict[str, LiveValue]:
+        """Numbers for each ``LIVE_MATH`` entry, for the focus agent, right now."""
+        return {}
+
+    def follow(self) -> tuple[float, float, float, float] | None:
+        """(x, y, heading, zoom) to ride along with an agent (a chase camera that turns
+        with it, so "up" on screen is its "forward"), or None for the fixed map view."""
+        return None
+
+    def tool_of(self, inp: InputState) -> str:
+        """The active tool key (the first tool when the UI hasn't chosen one)."""
+        return inp.tool or (self.TOOLS[0].key if self.TOOLS else "")
+
     def state_arrays(self) -> list[np.ndarray]:
         """Arrays that fully describe the state; used for determinism checks."""
         return []
@@ -125,10 +142,17 @@ class ScriptedInput:
     radius: float = 25.0
     period: float = 4.0
     presses: dict[int, tuple[str, ...]] = field(default_factory=dict)
+    tool: str = ""
+    buttons: frozenset[str] = frozenset()     # held for the whole script (drag tests)
+    click_every: int = 0                      # left-click at the cursor every N steps
 
     def at(self, step: int, dt: float) -> InputState:
+        keys = self.presses.get(step, ())
         if self.kind == "circle":
             a = 2 * np.pi * step * dt / self.period
             m = (self.center[0] + self.radius * np.cos(a), self.center[1] + self.radius * np.sin(a))
-            return InputState(mouse=m, key_presses=self.presses.get(step, ()))
-        return InputState(key_presses=self.presses.get(step, ()))
+            clicks = ((("left", m),) if self.click_every and step % self.click_every == 0
+                      else ())
+            return InputState(mouse=m, key_presses=keys, tool=self.tool, buttons=self.buttons,
+                              clicks=clicks)
+        return InputState(key_presses=keys, tool=self.tool)

@@ -60,6 +60,10 @@ $\gamma = \lVert \mathbf{o} - \mathbf{c} \rVert^2 - \rho^2$.
 
 ## Follow the Gap
 
+Ray $k$ points at angle $\alpha_k$ from the car's heading and measures range $r_k$. The
+ray with the smallest smoothed range is at angle $\alpha_{min}$ and range $\bar r_{min}$;
+$b$ is the safety-bubble size and $r_{gap}$ the gap threshold.
+
 1. Smooth the ranges with a 3-ray moving average: $\bar r_k$.
 2. Bubble: blank every ray with $|\alpha_k - \alpha_{min}| < \arctan(b / \bar r_{min})$.
 3. Free rays: $\bar r_k > r_{gap}$. The **gap** is the longest run of consecutive free rays.
@@ -67,8 +71,11 @@ $\gamma = \lVert \mathbf{o} - \mathbf{c} \rVert^2 - \rho^2$.
 
 ## Pure pursuit
 
-For a rear-axle car with wheelbase $L$ and an aim point at bearing $\alpha$ and distance
-$L_d$, the circle through both points has curvature
+The car steers its front wheels by the angle $\delta$. It has wheelbase $L$ (the distance
+between the axles), and the aim point is at angle $\alpha$ from its heading and distance
+$L_d$ (the lookahead). The circle through the rear axle and the aim point has curvature
+$\kappa$ (one over its radius $R$). The lookahead grows with speed $v$ by the gain $k$,
+starts at $L_{min}$, and never reaches past the aim point's range $\bar r_{target}$:
 
 $$
 \kappa = \frac{2 \sin\alpha}{L_d}
@@ -83,7 +90,9 @@ $R$, so $L_d = 2R\sin\alpha$; that is where the factor 2 comes from.
 
 ## Choosing a speed
 
-Stopping from speed $v$ at deceleration $a_b$ takes distance $v^2/(2a_b)$. To be able to
+Here $v_{max}$ is the top speed, $k_\delta$ how much the car slows in turns, and $v^*$ the
+speed it aims for. Stopping from speed $v$ at deceleration $a_b$ takes distance
+$v^2/(2a_b)$. To be able to
 stop before the nearest obstacle ahead (distance $d_{front}$, minus a margin $m$):
 
 $$
@@ -95,6 +104,9 @@ and the throttle is a proportional controller $a = \operatorname{clip}(k_p (v^* 
 The steering itself is rate-limited: $|\dot\delta| \le \dot\delta_{max}$.
 
 ## The kinematic bicycle model
+
+The car is at $(x, y)$ with heading $\theta$ and speed $v$; a dot means "rate of change",
+so $\dot x$ is how fast $x$ changes each second:
 
 $$
 \dot x = v\cos\theta,\qquad \dot y = v\sin\theta,\qquad \dot\theta = \frac{v}{L}\tan\delta,\qquad \dot v = a

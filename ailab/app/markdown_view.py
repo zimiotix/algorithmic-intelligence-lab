@@ -72,7 +72,7 @@ class MarkdownView(QTextBrowser):
         for e in eqs:
             p = paths.get(e.key)
             if p and e.key not in self._images:
-                img, size = _rasterize(str(p), PT_TO_PX[e.display], dpr)
+                img, size = rasterize_svg(str(p), PT_TO_PX[e.display], dpr)
                 if img is not None:
                     self._images[e.key] = img
                     sizes[e.key] = size
@@ -94,9 +94,28 @@ class MarkdownView(QTextBrowser):
         html = re.sub(r"<table>", '<table cellspacing="0" width="100%">', html)
         self.document().setDefaultStyleSheet(_css(self))
         self.setHtml(html)
+        self._measure()
+
+    MEASURE = 900   # widest comfortable text column, in pixels (like max-width on the web)
+
+    def _measure(self) -> None:
+        """Keep lines readable on wide windows: centre a column of at most MEASURE px."""
+        side = max(20, (self.viewport().width() - self.MEASURE) // 2)
+        root = self.document().rootFrame()
+        fmt = root.frameFormat()
+        if fmt.leftMargin() != side:
+            fmt.setLeftMargin(side)
+            fmt.setRightMargin(side)
+            fmt.setTopMargin(24)
+            fmt.setBottomMargin(28)
+            root.setFrameFormat(fmt)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._measure()
 
 
-def _rasterize(svg_path: str, scale: float, dpr: float):
+def rasterize_svg(svg_path: str, scale: float, dpr: float):
     r = QSvgRenderer(svg_path)
     if not r.isValid():
         return None, None

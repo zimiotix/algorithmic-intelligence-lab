@@ -15,7 +15,7 @@ def main() -> int:
         print(__doc__)
         return 1
     track, slug, title = sys.argv[1:]
-    tracks = tomllib.loads((ROOT / "chapters/tracks.toml").read_text())["tracks"]
+    tracks = tomllib.loads((ROOT / "chapters/tracks.toml").read_text(encoding="utf-8"))["tracks"]
     if track not in tracks:
         print(f"unknown track '{track}'. Known: {', '.join(tracks)}")
         return 1
@@ -27,7 +27,7 @@ def main() -> int:
         if src.is_file():
             out = dest / src.relative_to(ROOT / "templates/chapter")
             out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(src.read_text().replace("{title}", title))
+            out.write_text(src.read_text(encoding="utf-8").replace("{title}", title), encoding="utf-8")
     print(f"created {dest.relative_to(ROOT)}  (id: {track}.{slug})")
     print(f"try it:  uv run ailab --chapter {track}.{slug}")
     return 0

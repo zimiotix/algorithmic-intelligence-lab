@@ -2,11 +2,12 @@
 
 **Watch intelligence emerge from simple, exact rules.**
 
-A native Linux app for learning *deterministic* intelligent algorithms (no neural
-networks) by playing with them. Every chapter is a live simulation you interact with using
-the mouse and keyboard. Overlays show what the algorithm senses and decides, and a three-level
-Deep dive (Intuition, The Math, Research) explains it for high-school students and
-researchers alike.
+A native desktop app (Linux and Windows) for learning *deterministic* intelligent
+algorithms (no neural networks) by playing with them. Every chapter is a live simulation
+you build in, disturb and inspect with the mouse and keyboard. Overlays show what the
+algorithm senses and decides, **Live Math** shows its equations with the numbers it is
+using right now, and a three-level Deep dive (Intuition, The Math, Research) explains it
+for high-school students and researchers alike.
 
 ![Home](docs/img/home.jpg)
 
@@ -14,25 +15,63 @@ researchers alike.
 |---|---|---|
 | ![fish](docs/img/fish.jpg) | ![ants](docs/img/lab-ants.jpg) | ![racer](docs/img/lab-racer.jpg) |
 
-## Quick start
+## Install and run
+
+You need [uv](https://docs.astral.sh/uv/) (it fetches the right Python by itself) and
+[git](https://git-scm.com/). A GPU is optional.
+
+**Ubuntu / Linux**
 
 ```bash
-uv sync
+curl -LsSf https://astral.sh/uv/install.sh | sh
+git clone https://github.com/<you>/algorithmic-intelligence-lab.git
+cd algorithmic-intelligence-lab
 uv run ailab
+./tools/install_desktop.sh          # optional: add it to your app launcher
 ```
 
-Needs Linux, Python 3.12+, OpenGL 3.3. An NVIDIA GPU is used automatically when present;
-otherwise everything runs on the CPU. Optional: a TeX install (`latex`, `dvisvgm`) for
-typeset equations.
+**Windows 10/11** (PowerShell)
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+git clone https://github.com/<you>/algorithmic-intelligence-lab.git
+cd algorithmic-intelligence-lab
+uv run ailab
+powershell -ExecutionPolicy Bypass -File tools\install_shortcut.ps1   # optional: Start menu
+```
+
+The first `uv run` downloads the dependencies (a few hundred MB, mostly Qt and Warp).
+Requirements: OpenGL 3.3 (any GPU or driver from the last decade). An NVIDIA GPU is used
+automatically through CUDA; otherwise everything runs on the CPU with smaller agent
+counts. Equations are typeset by LaTeX when a TeX install is present (TeX Live, MiKTeX)
+and by a built-in renderer otherwise, so nothing extra is needed. macOS should work on
+the CPU path but is only checked in CI.
 
 ```bash
 uv run ailab --sysinfo                              # what your machine brings
 uv run ailab --list                                 # all chapters
 uv run ailab --chapter swarms.fish-school           # open one directly
 uv run ailab --device cpu                           # force the CPU backend
-uv run ailab --render-gpu nvidia                    # hybrid laptops: draw on the dGPU
-./tools/install_desktop.sh                          # add it to your app launcher
+uv run ailab --render-gpu nvidia                    # Linux hybrid laptops: draw on the dGPU
 ```
+
+## The Lab
+
+- **Tools** on a hotbar (keys 1–9): hunt the fish, build rock and walls, drop food, lay
+  cones, inspect one agent. Each chapter declares its own.
+- **Guide** (left): the tool in your hand, **experiments** that tick themselves off when
+  you manage them (each reveals the idea behind it), the controls, and a **Model vs.
+  nature** note on what the simulation simplifies.
+- **Inspector** (right): **Live Math** (the rules with the focus agent's numbers plugged
+  in, with a ✓ when a condition holds; every symbol is defined above its equation), the
+  overlays (Ctrl+1–9) and every parameter. Hover any parameter for what it does.
+- **Focus mode** (Tab): only the simulation, nothing else. F11 for full screen. Both side
+  panels can be resized or hidden.
+- **Responsive like a web page**: the window fits the screen it opens on; on narrower
+  windows the chapter list becomes a ☰ drawer, the Guide and Inspector slide over the
+  view, the toolbar sheds secondary controls, and cards reflow.
+- **Chase camera** (racer): the view rides with the car and turns with it, so the arrow
+  keys match the screen. V switches to the whole track.
 
 ## System-aware by design
 
@@ -46,10 +85,10 @@ the iGPU usually draws while the dGPU computes, and the app shows you which is w
 
 | Layer | Choice | Why |
 |---|---|---|
-| UI | Qt 6 (PySide6 Essentials), native widgets, Wayland/X11 | Native Linux look and feel |
+| UI | Qt 6 (PySide6 Essentials), native widgets | Native on Linux (Wayland/X11) and Windows |
 | Compute | NVIDIA Warp | One kernel source runs on CUDA **or** CPU |
 | Rendering | ModernGL: SDF shapes, 4× MSAA, HDR bloom, procedural backgrounds | Crisp at any zoom, and it looks good |
-| Maths text | Markdown + LaTeX → SVG (cached) | Real typeset equations, rendered natively |
+| Maths text | Markdown + LaTeX → SVG (cached), ziamath fallback | Typeset equations with or without TeX |
 | Exact maths | SymPy in the test suite | Every equation shown is checked against the code |
 | Explainer videos | Manim Community Edition (optional) | Deep-dive animations |
 
@@ -74,10 +113,11 @@ Algorithms that need memory use one of three shared kinds (`ailab/core/memory.py
 
 ```
 ailab/                 the engine (never chapter-specific)
-  core/                simulation contract, params, clock, memory, system probe, catalogue
+  core/                simulation contract, params/tools/experiments, clock, memory,
+                       sandbox kit (walls, rock), system probe, catalogue, paths
   render/              Scene API (numpy) + ModernGL renderer + shaders
   text/                markdown + LaTeX
-  app/                 Qt application (boot check, main window, viewport)
+  app/                 Qt application (boot check, main window, viewport, Lab panels)
 chapters/
   tracks.toml          curriculum tracks (order, colour)
   <track>/<slug>/      one self-contained chapter: chapter.toml, sim.py, intro.md,

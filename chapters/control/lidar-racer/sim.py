@@ -18,8 +18,19 @@ from __future__ import annotations
 
 import numpy as np
 
-from ailab.core import HudItem, InputState, Overlay, Param, Simulation
+from ailab.core import (
+    Experiment,
+    HudItem,
+    InputState,
+    LiveEq,
+    LiveValue,
+    Overlay,
+    Param,
+    Simulation,
+    Tool,
+)
 from ailab.core.memory import FieldMemory, TraceMemory
+from ailab.core.params import fmt
 from ailab.render import palette as pal
 
 WIDTH, HEIGHT = 160.0, 90.0
@@ -167,24 +178,36 @@ class Sim(Simulation):
     background = "grass"
     seeded = False          # no randomness unless sensor noise is turned up
     PARAMS = [
-        Param("track", "Track", "Grand Prix", choices=tuple(TRACKS), restart=True),
+        Param("track", "Track", "Grand Prix", choices=tuple(TRACKS), restart=True,
+              help="Which circuit to drive. The car has never seen any of them."),
         Param("n_rays", "Lidar rays", 61, 5, 361, 2, "More rays: finer view, more work.", "N"),
-        Param("fov", "Lidar field of view", 240.0, 60.0, 360.0, 5.0, "", "\\Phi", "deg"),
-        Param("range", "Lidar range", 30.0, 5.0, 80.0, 1.0, "", "R_{max}"),
+        Param("fov", "Lidar field of view", 240.0, 60.0, 360.0, 5.0,
+              "How wide the fan of rays is. Narrow: it can't see the corner coming.",
+              "\\Phi", "deg"),
+        Param("range", "Lidar range", 30.0, 5.0, 80.0, 1.0,
+              "How far each ray can see. Short: it must drive slower to stop in time.",
+              "R_{max}"),
         Param("noise", "Sensor noise", 0.0, 0.0, 1.5, 0.05,
               "Gaussian noise on each range (seeded, so still deterministic).", "\\sigma"),
         Param("bubble", "Safety bubble", 1.6, 0.0, 6.0, 0.1,
               "Rays around the closest obstacle are treated as blocked.", "b"),
         Param("threshold", "Gap threshold", 6.0, 1.0, 30.0, 0.5,
               "A ray counts as free if it sees farther than this.", "r_{gap}"),
-        Param("aim", "Aim point", "Blend", choices=("Blend", "Deepest point", "Gap centre")),
+        Param("aim", "Aim point", "Blend", choices=("Blend", "Deepest point", "Gap centre"),
+              help="Where in the chosen gap to aim: its deepest ray, its middle, or halfway."),
         Param("lookahead_gain", "Lookahead gain", 0.3, 0.0, 1.5, 0.05,
               "Lookahead distance grows with speed: L_d = k v + L_min.", "k", "s"),
-        Param("lookahead_min", "Min lookahead", 3.0, 1.0, 20.0, 0.5, "", "L_{min}"),
-        Param("v_max", "Top speed", 24.0, 3.0, 45.0, 0.5, "", "v_{max}", "u/s"),
+        Param("lookahead_min", "Min lookahead", 3.0, 1.0, 20.0, 0.5,
+              "The shortest distance ahead it aims at, even when slow.", "L_{min}"),
+        Param("v_max", "Top speed", 24.0, 3.0, 45.0, 0.5,
+              "The fastest it will ever go, on the longest straight.", "v_{max}", "u/s"),
         Param("a_brake", "Braking", 18.0, 2.0, 40.0, 0.5, "Max deceleration.", "a_b", "u/s^2"),
-        Param("k_turn", "Slow down in turns", 2.0, 0.0, 8.0, 0.1, "", "k_\\delta"),
-        Param("steer_rate", "Steering speed", 3.0, 0.5, 10.0, 0.1, "", "\\dot\\delta_{max}",
+        Param("k_turn", "Slow down in turns", 2.0, 0.0, 8.0, 0.1,
+              "How much steering lowers the target speed. At 0 it takes corners flat out.",
+              "k_\\delta"),
+        Param("steer_rate", "Steering speed", 3.0, 0.5, 10.0, 0.1,
+              "How fast the wheels can turn. Slow steering reacts late in chicanes.",
+              "\\dot\\delta_{max}",
               "rad/s"),
         Param("map_tau", "Map memory", 60.0, 2.0, 600.0, 1.0,
               "How long the occupancy map remembers a wall it no longer sees.", "\\tau_m", "s"),
@@ -200,6 +223,57 @@ class Sim(Simulation):
         Overlay("scan", "Scan plot", True, "The lidar scan as a bar chart."),
         Overlay("map", "Occupancy memory", False, "Everything the lidar has hit recently."),
         Overlay("trail", "Speed trail", True),
+        Overlay("chase", "Chase camera", True,
+                "The view rides with the car and turns with it, so the arrow keys match the "
+                "screen: Up is forward, Left is left. Press V for the whole track."),
+    ]
+    TOOLS = [
+        Tool("cone", "Cone", "cone", "Click to drop a traffic cone", "Click to remove a cone",
+             tip="Arrow keys shove the car at any time; C clears every cone."),
+        Tool("barrier", "Barrier", "barrier", "Drag to lay a row of cones",
+             "Drag to sweep cones away", radius=1.5,
+             tip="Build a chicane or narrow the track. The lidar sees cones just like walls."),
+    ]
+    EXPERIMENTS = [
+        Experiment("lap", "Watch one full lap", "Just watch. Turn on Scan plot to see what "
+                   "it sees.", "There is no map and no plan: every 1/60 s it picks the deepest "
+                   "gap and steers at it. A lap emerges from a reflex.", check="exp_lap"),
+        Experiment("chicane", "Build a chicane",
+                   "Put 4 or more cones on the track so it must weave, then let it finish a "
+                   "lap.", "The gap finder has no special case for cones: they just make some "
+                   "rays shorter, and the same rule handles them.", check="exp_chicane"),
+        Experiment("shove", "Shove it and let go",
+                   "Hold an arrow key for a moment to knock the car off line, then release.",
+                   "It re-decides from fresh rays every step, so being knocked off line is "
+                   "just a new situation: reactive control recovers for free.",
+                   check="exp_shove"),
+        Experiment("greedy", "Look too far ahead",
+                   "Raise Lookahead gain (k) to 1.0 or more and watch the hairpins.",
+                   "A far look-ahead smooths the steering but cuts corners; a near one "
+                   "wobbles. Pure pursuit is always this trade-off.", check="exp_greedy"),
+        Experiment("noise", "Blur its vision",
+                   "Raise Sensor noise (σ) to 1.0 and watch the gap and the steering.",
+                   "Noisy rays make the chosen gap flicker. Smoothing helps a little; real "
+                   "robots filter their sensors (see the Estimation track)."),
+    ]
+    LIVE_MATH = [
+        LiveEq("brake", "Can it still stop in time?",
+               r"v \le \sqrt{2\,a_b\,(d_{front} - m)}",
+               "v: speed now · a_b: braking power · d_front: free distance straight ahead · "
+               "m: safety margin (1.5)"),
+        LiveEq("speed", "Target speed: the tightest limit wins",
+               r"v^* = \min\!\Big(v_{max},\; \frac{v_{max}}{1 + k_\delta|\delta|},\; "
+               r"\sqrt{2 a_b (d_{front} - m)}\Big)",
+               "v_max: top speed · k_δ: slow-down in turns · δ: steering angle"),
+        LiveEq("gap", "Which rays count as free?", r"\bar r_k > r_{gap}",
+               "r̄_k: range of ray k, averaged with its two neighbours · r_gap: gap threshold"),
+        LiveEq("lookahead", "How far ahead it aims",
+               r"L_d = \operatorname{clip}(k\,v + L_{min},\; L_{min},\; \bar r_{target})",
+               "k: lookahead gain · L_min: minimum lookahead · r̄_target: range to the aim "
+               "point"),
+        LiveEq("pursuit", "Steering to hit the aim point",
+               r"\delta = \arctan\!\Big(\frac{2L\sin\alpha}{L_d}\Big)",
+               "α: angle to the aim point · L: wheelbase (2.0) · L_d: lookahead distance"),
     ]
 
     # ------------------------------------------------------------------ setup
@@ -227,6 +301,10 @@ class Sim(Simulation):
         self.map = FieldMemory(self.world, 0.5, channels=1, tau=self.p.map_tau,
                                device=self.device)
         self.trail = TraceMemory(600, 3)
+        self._stroke_last = None
+        self._shoved_at, self._crash_after_shove = None, False
+        self._chicane_lap = None
+        self._greedy_crash = False
         self._sense_and_plan()
 
     def _build_meshes(self) -> None:
@@ -320,18 +398,52 @@ class Sim(Simulation):
         self.crash_flash = max(0.0, self.crash_flash - dt)
 
     def _interact(self, inp: InputState) -> None:
+        tool = self.tool_of(inp)
         for button, at in inp.clicks:
             at = np.asarray(at, float)
-            if button == "left" and np.hypot(at[0] - self.x, at[1] - self.y) > 4:
-                self.cones = np.vstack([self.cones, at[None]])
+            if tool != "cone":
+                continue
+            if button == "left":
+                self._add_cone(at)
             elif button == "right" and len(self.cones):
                 d = np.linalg.norm(self.cones - at, axis=1)
                 if d.min() < 3:
                     self.cones = np.delete(self.cones, int(np.argmin(d)), 0)
+        if tool == "barrier" and inp.mouse is not None and {"left", "right"} & inp.buttons:
+            m = np.asarray(inp.mouse, float)
+            if "left" in inp.buttons:
+                # lay cones along the drag, one every 1.4 units
+                if self._stroke_last is None or np.linalg.norm(m - self._stroke_last) >= 1.4:
+                    self._add_cone(m)
+                    self._stroke_last = m
+            elif len(self.cones):
+                self.cones = self.cones[np.linalg.norm(self.cones - m, axis=1) > 1.5]
+        else:
+            self._stroke_last = None
         if "C" in inp.key_presses:
             self.cones = np.zeros((0, 2))
+        if "V" in inp.key_presses:
+            self.show.set("chase", not self.show.chase)
         if self.map.tau[0] != self.p.map_tau:
             self.map.tau[:] = self.p.map_tau
+        # experiment bookkeeping (pure observation, never feeds back into driving)
+        if {"Left", "Right", "Up", "Down"} & inp.keys:
+            self._shoved_at, self._crash_after_shove = self.t, False
+        on_track = self._cones_on_track()
+        if on_track >= 4 and self._chicane_lap is None:
+            self._chicane_lap = self.lap
+        elif on_track < 4:
+            self._chicane_lap = None
+
+    def _add_cone(self, at: np.ndarray) -> None:
+        if np.hypot(at[0] - self.x, at[1] - self.y) > 4:
+            self.cones = np.vstack([self.cones, at[None]])
+
+    def _cones_on_track(self) -> int:
+        if not len(self.cones):
+            return 0
+        d = np.linalg.norm(self.cones[:, None, :] - self.center[None, ::4, :], axis=2).min(1)
+        return int((d < HALF_TRACK).sum())
 
     def _collide_and_score(self) -> None:
         p = np.array([self.x, self.y])
@@ -351,6 +463,9 @@ class Sim(Simulation):
             CONE_R + CAR_W * 0.5
         if off_track or hit_cone:
             self.crashes += 1
+            self._crash_after_shove = True
+            if self.p.lookahead_gain >= 1.0:
+                self._greedy_crash = True
             self.crash_flash = 0.6
             j = (k + 6) % n
             if len(self.cones):     # don't respawn inside a cone
@@ -452,6 +567,37 @@ class Sim(Simulation):
 
         if self.show.scan:
             self._draw_scan(s)
+        if self.show.chase:
+            self._draw_minimap(s)
+
+    def follow(self):
+        """Chase camera: the car always points up the screen."""
+        return (self.x, self.y, self.theta, 3.2) if self.show.chase else None
+
+    def _draw_minimap(self, s) -> None:
+        """The whole track in the top-right corner, so the chase view never gets lost."""
+        w, _ = s.view
+        bw, bh, m = 210.0, 130.0, 16.0
+        x0, y0 = w - bw - m, m
+        s.rect(x0 - 8, y0 - 8, x0 + bw + 8, y0 + bh + 8, pal.rgba("#0b1220", 0.78), screen=True)
+        c = self.center
+        lo, hi = c.min(0) - HALF_TRACK, c.max(0) + HALF_TRACK
+        k = min(bw / (hi[0] - lo[0]), bh / (hi[1] - lo[1]))
+        ox = x0 + (bw - k * (hi[0] - lo[0])) / 2
+        oy = y0 + (bh - k * (hi[1] - lo[1])) / 2
+
+        def to_px(p):
+            p = np.atleast_2d(p)
+            return np.stack([ox + (p[:, 0] - lo[0]) * k, oy + (hi[1] - p[:, 1]) * k], 1)
+
+        s.polyline(to_px(c), max(2.0, HALF_TRACK * 2 * k), pal.rgba("#475569", 0.9),
+                   closed=True, screen=True)
+        if len(self.cones):
+            s.circles(to_px(self.cones), 2.0, pal.rgba("#f97316"), screen=True)
+        car = to_px([self.x, self.y])[0]
+        hd = np.array([np.cos(self.theta), -np.sin(self.theta)])
+        s.lines(car, car + hd * 12, 2.0, pal.rgba("#fecdd3"), screen=True)
+        s.circles(car, 4.5, pal.rgba("#e11d48", 1.0, 1.4), screen=True)
 
     def _predict(self, seconds: float = 1.5) -> np.ndarray:
         x, y, th = self.x, self.y, self.theta
@@ -464,14 +610,15 @@ class Sim(Simulation):
         return np.array(pts)
 
     def _draw_scan(self, s) -> None:
-        """Screen-space bar chart: range per ray, left = car's right side."""
+        """Screen-space bar chart: range per ray, laid out as the driver sees it (left bar =
+        the car's leftmost ray), so it matches the chase view."""
         w, h = s.view
         bw, bh = min(420.0, w * 0.32), 120.0
         x0, y1 = w - bw - 20, h - 20
         y0 = y1 - bh
         s.rect(x0 - 10, y0 - 10, x0 + bw + 10, y1 + 10, pal.rgba("#0b1220", 0.72), screen=True)
         n = len(self.ranges)
-        xs = x0 + (np.arange(n) + 0.5) * bw / n
+        xs = x0 + (n - 1 - np.arange(n) + 0.5) * bw / n     # ray 0 is the car's right
         r = self.plan["smoothed"] / self.p.range
         col = np.tile(pal.rgba(pal.SENSE, 0.55), (n, 1))
         st, ln = self.plan["gap"]
@@ -496,4 +643,54 @@ class Sim(Simulation):
             HudItem("lap", f"{self.lap}  ·  {self.t - self.lap_start:.1f} s"),
             HudItem("last / best", f"{fmt(self.last_lap)} / {fmt(self.best_lap)}"),
             HudItem("crashes", f"{self.crashes}"),
+            HudItem("view", "chase · V for map" if self.show.chase else "map · V to chase"),
         ]
+
+    # ------------------------------------------------------------- live math
+    def live_math(self) -> dict[str, LiveValue]:
+        P, plan = self.p, self.plan
+        m = 1.5
+        free = max(0.0, self.front - m)
+        bound = float(np.sqrt(2 * P.a_brake * free))
+        ok = self.v <= bound + 1e-6
+        out = {"brake": LiveValue(f"{fmt(self.v, 1)} ≤ √(2·{fmt(P.a_brake, 1)}·({fmt(self.front, 1)}"
+                                  f"−{m})) = {fmt(bound, 1)}", ok,
+                                  "safe: it could stop before what's ahead" if ok
+                                  else "too fast for the space ahead: braking hard")}
+        v_turn = P.v_max / (1 + P.k_turn * abs(plan["delta"]))
+        limits = {"top speed": P.v_max, "the turn": v_turn, "the braking distance": bound}
+        which = min(limits, key=limits.get)
+        out["speed"] = LiveValue(f"min({fmt(P.v_max, 1)}, {fmt(v_turn, 1)}, {fmt(bound, 1)}) = "
+                                 f"{fmt(self.v_target, 1)} u/s", None, f"limited by {which}")
+        st, ln = plan["gap"]
+        n_free = int(plan["free"].sum())
+        width = np.degrees(self.angles[min(st + ln - 1, len(self.angles) - 1)] - self.angles[st])
+        out["gap"] = LiveValue(f"{n_free} of {len(self.angles)} rays free (r_gap = "
+                               f"{fmt(P.threshold, 1)}); longest run {ln} rays, {width:.0f}°",
+                               None, "it aims inside that longest run")
+        target = float(plan["smoothed"][plan["target"]])
+        out["lookahead"] = LiveValue(f"clip({fmt(P.lookahead_gain)}·{fmt(self.v, 1)} + "
+                                     f"{fmt(P.lookahead_min, 1)}, {fmt(P.lookahead_min, 1)}, "
+                                     f"{fmt(target, 1)}) = {fmt(plan['lookahead'], 1)}", None,
+                                     "faster → looks further ahead")
+        a = plan["alpha"]
+        out["pursuit"] = LiveValue(f"α = {np.degrees(a):+.1f}° → δ = "
+                                   f"{np.degrees(plan['delta']):+.1f}° (wheel now "
+                                   f"{np.degrees(self.delta):+.1f}°)", None,
+                                   "turning left" if plan["delta"] > 0.02 else
+                                   "turning right" if plan["delta"] < -0.02 else "straight")
+        return out
+
+    # ------------------------------------------------------------ experiments
+    def exp_lap(self) -> bool:
+        return self.lap >= 1
+
+    def exp_chicane(self) -> bool:
+        return self._chicane_lap is not None and self.lap > self._chicane_lap
+
+    def exp_shove(self) -> bool:
+        return (self._shoved_at is not None and self.t - self._shoved_at > 4.0
+                and not self._crash_after_shove)
+
+    def exp_greedy(self) -> bool:
+        return self._greedy_crash

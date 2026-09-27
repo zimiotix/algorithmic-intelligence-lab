@@ -6,18 +6,23 @@ session, optional tools) so the app can
   * scale simulation defaults to the hardware,
   * and *show* the learner what their computer is doing.
 
-The probe only reads /proc, /sys and a couple of fast CLI tools. Every step is
-optional: a missing tool degrades to "unknown", never to a crash.
+Linux reads /proc, /sys and lspci; Windows asks the OS (one CIM query + the memory API);
+macOS uses sysctl. nvidia-smi is used everywhere it exists. Every step is optional: a
+missing tool degrades to "unknown", never to a crash.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+
+IS_WINDOWS = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
 
 _PCI_VENDORS = {"0x10de": "NVIDIA", "0x8086": "Intel", "0x1002": "AMD"}
 
@@ -91,7 +96,7 @@ class SystemInfo:
     def summary_lines(self) -> list[tuple[str, str]]:
         """Human readable (label, value) rows for the UI and the CLI banner."""
         rows = [
-            ("OS", f"{self.os_name} · kernel {self.kernel}"),
+            ("OS", f"{self.os_name} · {'build' if IS_WINDOWS else 'kernel'} {self.kernel}"),
             ("CPU", f"{self.cpu_model} · {self.cpu_cores} cores / {self.cpu_threads} threads"),
             ("Memory", f"{self.ram_total_mb / 1024:.1f} GB total · "
                        f"{self.ram_available_mb / 1024:.1f} GB free"),
@@ -139,19 +144,28 @@ class SystemInfo:
             notes.append("No CUDA GPU found: every chapter runs on the CPU fallback "
                          "with smaller default agent counts.")
         if self.is_hybrid:
-            notes.append("Hybrid graphics: the desktop GPU draws the picture, the NVIDIA GPU "
-                         "does the maths. Use --render-gpu nvidia to draw on the dGPU too.")
+            if IS_WINDOWS:
+                notes.append("Hybrid graphics: Windows picks the drawing GPU. To draw on the "
+                             "NVIDIA GPU, set python.exe to 'High performance' in Settings → "
+                             "Display → Graphics.")
+            else:
+                notes.append("Hybrid graphics: the desktop GPU draws the picture, the NVIDIA GPU "
+                             "does the maths. Use --render-gpu nvidia to draw on the dGPU too.")
         if "llvmpipe" in self.gl_renderer.lower():
             notes.append("OpenGL is software-rendered: visuals will be slow. Check GPU drivers.")
         if not self.tools.get("latex"):
-            notes.append("LaTeX not found: equations are shown as source text.")
+            notes.append("LaTeX not found: equations use the built-in math renderer "
+                         "(install TeX Live or MiKTeX for full typesetting).")
         return notes
 
 
 # ---------------------------------------------------------------------- probes
 def _run(cmd: list[str], timeout: float = 3.0) -> str:
+    # No console window flashing up on Windows when launched from a shortcut.
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False,
+                             creationflags=flags)
         return out.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -166,6 +180,10 @@ def _read(path: str) -> str:
 
 
 def _os_name() -> str:
+    if IS_WINDOWS:
+        return f"Windows {platform.release()}"
+    if IS_MAC:
+        return f"macOS {platform.mac_ver()[0]}"
     for line in _read("/etc/os-release").splitlines():
         if line.startswith("PRETTY_NAME="):
             return line.split("=", 1)[1].strip('"')
@@ -192,6 +210,11 @@ def _cpu() -> tuple[str, int, int]:
 
 
 def _memory() -> tuple[int, int]:
+    if IS_WINDOWS:
+        return _memory_windows()
+    if IS_MAC:
+        total = int(_run(["sysctl", "-n", "hw.memsize"]) or 0) // 2**20
+        return total, 0
     total = avail = 0
     for line in _read("/proc/meminfo").splitlines():
         if line.startswith("MemTotal:"):
@@ -201,6 +224,74 @@ def _memory() -> tuple[int, int]:
     return total, avail
 
 
+# ------------------------------------------------------------------- windows
+_WIN_QUERY = (
+    "$c = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores;"
+    "$g = @(Get-CimInstance Win32_VideoController | Select-Object Name,AdapterCompatibility,"
+    "DriverVersion,AdapterRAM);"
+    "@{cpu=$c; gpus=$g} | ConvertTo-Json -Depth 3 -Compress"
+)
+
+
+def _memory_windows() -> tuple[int, int]:
+    import ctypes
+
+    class MemoryStatus(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+    st = MemoryStatus()
+    st.dwLength = ctypes.sizeof(MemoryStatus)
+    try:
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            return st.ullTotalPhys // 2**20, st.ullAvailPhys // 2**20
+    except (AttributeError, OSError):
+        pass
+    return 0, 0
+
+
+def parse_windows_query(text: str) -> tuple[str, int, list[GPU]]:
+    """Parse the JSON printed by ``_WIN_QUERY``: (cpu model, physical cores, gpus)."""
+    try:
+        data = json.loads(text) if text else {}
+    except ValueError:
+        return "", 0, []
+    cpu = data.get("cpu") or {}
+    model = " ".join(str(cpu.get("Name", "")).replace("(R)", "").replace("(TM)", "").split())
+    cores = int(cpu.get("NumberOfCores") or 0)
+    raw = data.get("gpus") or []
+    if isinstance(raw, dict):          # PowerShell unwraps one-element arrays
+        raw = [raw]
+    gpus = []
+    for g in raw:
+        name = str(g.get("Name") or "").strip()
+        if not name or "Basic Display" in name or "Remote" in name:
+            continue
+        vendor = next((v for v in ("NVIDIA", "AMD", "Intel") if v.lower() in
+                       (name + str(g.get("AdapterCompatibility") or "")).lower()), "GPU")
+        if vendor == "AMD" or "Advanced Micro" in str(g.get("AdapterCompatibility") or ""):
+            vendor = "AMD"
+        for prefix in ("NVIDIA ", "AMD ", "Intel(R) ", "Intel "):
+            name = name.removeprefix(prefix)
+        # AdapterRAM is a uint32: it saturates at 4 GB, so nvidia-smi overrides it for NVIDIA.
+        ram = int(g.get("AdapterRAM") or 0) // 2**20
+        gpus.append(GPU(vendor=vendor, name=name, driver=str(g.get("DriverVersion") or ""),
+                        vram_mb=ram if vendor != "Intel" else 0))
+    return model, cores, gpus
+
+
+def _windows_hw() -> tuple[str, int, list[GPU]]:
+    out = _run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _WIN_QUERY],
+               timeout=8.0)
+    return parse_windows_query(out)
+
+
+# --------------------------------------------------------------------- linux
 def _pci_gpus() -> list[GPU]:
     """All display controllers, from lspci names if available, else /sys vendor ids."""
     gpus: list[GPU] = []
@@ -273,15 +364,28 @@ def probe() -> SystemInfo:
     """Fast hardware probe (~50 ms). Compute/GL fields are filled in later."""
     info = SystemInfo()
     info.os_name = _os_name()
-    info.kernel = platform.release()
-    info.cpu_model, info.cpu_cores, info.cpu_threads = _cpu()
+    info.kernel = platform.version() if IS_WINDOWS else platform.release()
+    info.cpu_threads = os.cpu_count() or 1
+    if IS_WINDOWS:
+        info.cpu_model, info.cpu_cores, info.gpus = _windows_hw()
+        info.cpu_model = info.cpu_model or platform.processor()
+        info.cpu_cores = info.cpu_cores or info.cpu_threads
+    elif IS_MAC:
+        info.cpu_model = _run(["sysctl", "-n", "machdep.cpu.brand_string"]) or platform.processor()
+        info.cpu_cores = int(_run(["sysctl", "-n", "hw.physicalcpu"]) or 0) or info.cpu_threads
+        info.gpus = [GPU(vendor="Apple", name=info.cpu_model)] if "Apple" in info.cpu_model else []
+    else:
+        info.cpu_model, info.cpu_cores, info.cpu_threads = _cpu()
+        info.gpus = _pci_gpus()
     info.ram_total_mb, info.ram_available_mb = _memory()
-    info.gpus = _pci_gpus()
     info.nvidia_driver = _nvidia(info.gpus)
     # Integrated GPUs first is confusing; list the CUDA device first.
     info.gpus.sort(key=lambda g: not g.cuda_capable)
-    info.session = os.environ.get("XDG_SESSION_TYPE", "")
-    info.desktop = os.environ.get("XDG_CURRENT_DESKTOP", "")
+    if IS_WINDOWS or IS_MAC:
+        info.session, info.desktop = "native", platform.system()
+    else:
+        info.session = os.environ.get("XDG_SESSION_TYPE", "")
+        info.desktop = os.environ.get("XDG_CURRENT_DESKTOP", "")
     info.python = f"Python {sys.version.split()[0]}"
     info.tools = {t: shutil.which(t) is not None
                   for t in ("latex", "dvisvgm", "ffmpeg", "nvidia-smi")}

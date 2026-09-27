@@ -72,3 +72,61 @@ def test_gpu_runs_are_deterministic(request):
     for info in CHAPTERS:
         if info.compute == "gpu":
             assert run(info, 5, "cuda:0").digest() == run(info, 5, "cuda:0").digest(), info.id
+
+
+# ------------------------------------------------------------------ the lab kit
+@pytest.mark.parametrize("info", CHAPTERS, ids=lambda c: c.id)
+def test_every_tool_works_and_stays_deterministic(info):
+    cls = load_sim_class(info)
+    keys = [t.key for t in cls.TOOLS]
+    assert len(keys) == len(set(keys)), "tool keys must be unique"
+    assert len(keys) <= 9, "the hotbar has keys 1-9"
+    for tool in keys:
+        digests = []
+        for _ in range(2):
+            sim = cls(SimContext(device="cpu", seed=4))
+            x0, y0, x1, y1 = sim.world
+            for buttons in (frozenset({"left"}), frozenset({"right"})):
+                script = ScriptedInput("circle", ((x0 + x1) / 2, (y0 + y1) / 2),
+                                       (x1 - x0) / 5, 1.0, tool=tool, buttons=buttons,
+                                       click_every=7)
+                for k in range(20):
+                    sim.advance(script.at(k, sim.dt))
+            digests.append(sim.digest())
+        assert digests[0] == digests[1], f"tool '{tool}' broke determinism"
+
+
+@pytest.mark.parametrize("info", CHAPTERS, ids=lambda c: c.id)
+def test_experiments_and_live_math(info):
+    from ailab.core.params import LiveValue
+
+    sim = run(info, 2, steps=10)
+    for e in sim.EXPERIMENTS:
+        assert e.title and e.how
+        if e.check:
+            assert isinstance(getattr(sim, e.check)(), bool), e.check
+    values = sim.live_math()
+    for eq in sim.LIVE_MATH:
+        assert eq.terms, f"{eq.key}: define the symbols (terms) before the equation"
+        assert isinstance(values.get(eq.key), LiveValue), f"live_math() lacks '{eq.key}'"
+        assert values[eq.key].text
+
+
+@pytest.mark.parametrize("info", CHAPTERS, ids=lambda c: c.id)
+def test_all_symbols_typeset(info):
+    """Live equations, glossary and parameter symbols must render even without TeX."""
+    from ailab.text.latex import render_builtin
+
+    cls = load_sim_class(info)
+    texts = [e.tex for e in cls.LIVE_MATH] + [t for t, _ in info.glossary]
+    texts += [p.symbol for p in cls.PARAMS if p.symbol]
+    for tex in texts:
+        assert render_builtin(tex) is not None, tex
+    assert info.reality, "chapter.toml needs a 'reality' note (model vs. nature)"
+
+
+@pytest.mark.parametrize("info", CHAPTERS, ids=lambda c: c.id)
+def test_every_parameter_explains_itself(info):
+    """Hover cards need a description for every tunable parameter."""
+    for p in load_sim_class(info).PARAMS:
+        assert len(p.help) >= 15, f"{p.key}: add a help text (shown when hovering)"

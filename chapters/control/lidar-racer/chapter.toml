@@ -6,9 +6,30 @@ tags = ["lidar", "follow-the-gap", "pure pursuit", "bicycle model", "ray casting
 compute = "cpu"
 memory = ["environmental", "episodic"]
 controls = [
-  ["Left click", "Drop a traffic cone"],
-  ["Right click", "Remove a cone"],
+  ["Cone (1)", "Left click drops a cone, right click removes one"],
+  ["Barrier (2)", "Left drag lays a row of cones, right drag sweeps them away"],
   ["C", "Clear all cones"],
-  ["Arrow keys", "Shove the car: see how it recovers"],
-  ["Wheel / middle-drag", "Zoom / pan"],
+  ["Arrow keys", "Shove the car: Up forward, Left/Right turn (as seen in chase view)"],
+  ["V", "Chase camera or the whole track"],
 ]
+reality = """
+Real autonomous race cars (F1TENTH, Indy Autonomous Challenge) are far messier: lidar is
+noisy and returns thousands of points in 3D, tyres slip, the car has mass and grip limits
+(this model is kinematic: no skidding at all), and teams combine a reactive rule like this
+with maps, localisation and planned racing lines. Follow-the-Gap is a real, widely used
+baseline, but it is only the reflex layer of a real driving stack.
+"""
+
+[glossary]
+'\mathbf{o},\; \mathbf{d}' = "Where a lidar ray starts, and its direction"
+'\mathbf{a},\, \mathbf{b},\; \mathbf{e}' = "The two ends of a wall segment, and the edge between them"
+'t,\; u' = "How far along the ray, and along the wall, the two meet"
+'\rho,\; \mathbf{c}' = "Radius and centre of a traffic cone"
+'\bar r_k,\; \alpha_k' = "Smoothed range of ray k, and its angle relative to the car"
+'\alpha' = "Angle from the car's heading to the aim point"
+'L' = "Wheelbase: distance between the axles (2.0)"
+'L_d,\; \kappa' = "Lookahead distance to the aim point, and the curvature of the circle through it"
+'\delta' = "Steering angle of the front wheels"
+'x,\, y,\, \theta,\, v' = "The car's position, heading and speed"
+'d_{front},\; m' = "Free distance straight ahead, and a safety margin (1.5)"
+'v^*,\; a' = "Target speed, and the acceleration the throttle asks for"

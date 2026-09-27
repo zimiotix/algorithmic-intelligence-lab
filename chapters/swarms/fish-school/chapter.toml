@@ -1,13 +1,38 @@
 title = "Fish School Under Attack"
 order = 10
-summary = "Thousands of fish, three local rules and a few senses. You are the predator."
+summary = "Thousands of fish, three local rules and a few senses. Hunt them, feed them, build their reef."
 difficulty = 2
-tags = ["boids", "Couzin zones", "emergence", "spatial hashing"]
+tags = ["boids", "Couzin zones", "emergence", "foraging vs. risk"]
 compute = "gpu"
 memory = ["working"]
 controls = [
-  ["Move the mouse", "You are the predator; its motion is your direction vector"],
-  ["Fast swipe", "Attack: fast passes can catch fish"],
-  ["Left click", "Choose the fish the overlays explain"],
-  ["Wheel / middle-drag", "Zoom / pan"],
+  ["Hunt (1)", "Move to chase; fast swipes catch fish"],
+  ["Rock (2)", "Left drag builds, right drag erases"],
+  ["Food (3)", "Left click drops food, right click clears"],
+  ["Inspect (4)", "Click a fish to follow and explain it"],
 ]
+reality = """
+Real schools are richer. Fish use vision, the lateral line, smell and sound; many species
+follow only a few nearest neighbours rather than everyone in a radius; schools mix sizes
+and species, each with its own reactions. Here fish can see through rock, every fish is
+identical, and fear is one number. The model captures how collective escape emerges, not
+the behaviour of any one species.
+"""
+
+[glossary]
+'\mathbf{x}_i' = "Position of fish i"
+'\mathbf{v}_i' = "Velocity of fish i (speed and direction)"
+'\hat{\mathbf{h}}_i' = "Heading of fish i: the direction it swims"
+'d_{ij}' = "Distance from fish i to fish j"
+'\hat{\mathbf{u}}_{ij}' = "Direction from fish i toward fish j"
+'O_i,\, A_i,\, N_i' = "The fish that i senses in its orientation zone, in its attraction zone, and in total"
+'\mathbf{F}^{rule}_i' = "The push one rule gives fish i (sep, ali, coh, flee, rock, food); their sum steers it"
+'f_i' = "Fear of fish i, from 0 (calm) to 1 (terrified)"
+'\theta' = "Threat level when the predator is sensed: faster predator, bigger threat"
+'\mathbf{v}_p,\; v_{attack}' = "The predator's velocity, and the speed of a real attack (40)"
+'\tilde{\mathbf{p}}_i,\; m_i' = "Where fish i remembers the predator, and how strong that memory is (0 to 1)"
+'h_i' = "Hunger of fish i, from 0 (full) to 1 (starving)"
+'b' = "How much one bite reduces hunger (0.25)"
+'r_{rock},\; L,\; \ell' = "Rock-feeling radius (3), look-ahead length (7), free distance before rock"
+'v^*_i' = "The speed fish i is trying to reach"
+'a_{max},\; k_v' = "Steering strength (30) and speed-keeping strength (2)"

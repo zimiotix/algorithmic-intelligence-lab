@@ -6,3 +6,7 @@ Write for a curious 15-year-old. No equations here.
 ## Things to try
 
 > **Experiment 1.** What to change, and what to watch for.
+
+## Model vs. nature
+
+In plain words: what is real about this model, and what it simplifies.

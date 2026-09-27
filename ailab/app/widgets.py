@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import math
 import re
 
@@ -177,6 +178,27 @@ class ChapterCard(QFrame):
             self.clicked.emit(self.info.id)
 
 
+def param_tooltip(p: Param) -> str:
+    """Hover card for a parameter: what it does, its symbol, range and default."""
+    sym = symbol_html(p.symbol)
+    head = f"<b>{html.escape(p.label)}</b>" + (f" &nbsp;<i>{sym}</i>" if sym else "")
+    lines = [head, f"<span style='color:{theme.TEXT}'>{html.escape(p.help)}</span>"
+             if p.help else ""]
+    unit = f" {p.unit}" if p.unit and p.unit != "deg" else ("°" if p.unit == "deg" else "")
+    if p.choices:
+        lines.append(f"<span style='color:{theme.MUTED}'>Options: "
+                     f"{html.escape(', '.join(p.choices))}</span>")
+    elif p.kind != "bool" and p.lo is not None:
+        lines.append(f"<span style='color:{theme.MUTED}'>Range {p.lo:g} – {p.hi:g}{unit}"
+                     f" · default {p.default:g}{unit}</span>")
+    if p.symbol:
+        lines.append(f"<span style='color:{theme.FAINT}'>Written <i>{sym}</i> in the Deep dive"
+                     " and Live Math.</span>")
+    if p.restart:
+        lines.append("<span style='color:#fbbf24'>⟲ Changing it restarts the run.</span>")
+    return "<div style='max-width:320px'>" + "<br>".join(x for x in lines if x) + "</div>"
+
+
 class ParamPanel(QWidget):
     """Sliders / toggles / dropdowns generated from a simulation's PARAMS."""
 
@@ -201,14 +223,17 @@ class ParamPanel(QWidget):
         sym = symbol_html(p.symbol)
         name = QLabel(p.label + (f"  <span style='color:{theme.FAINT}'><i>{sym}</i></span>"
                                  if sym else "") + (" <span style='color:#fbbf24'>⟲</span>"
-                                                    if p.restart else ""))
-        tip = p.help + ("\n(restarts the simulation)" if p.restart else "")
-        name.setToolTip(tip.strip())
+                                                    if p.restart else "")
+                      + f" <span style='color:{theme.FAINT}'>ⓘ</span>")
+        tip = param_tooltip(p)
+        w.setToolTip(tip)            # hover anywhere on the row
+        name.setToolTip(tip)
         g.addWidget(name, 0, 0)
         if p.kind == "bool":
             cb = QCheckBox()
             cb.setChecked(bool(value))
             cb.toggled.connect(lambda v, k=p.key: self.changed.emit(k, v))
+            cb.setToolTip(tip)
             g.addWidget(cb, 0, 1, Qt.AlignRight)
             self._widgets[p.key] = cb
         elif p.kind == "choice":
@@ -216,6 +241,7 @@ class ParamPanel(QWidget):
             combo.addItems(list(p.choices))
             combo.setCurrentText(str(value))
             combo.currentTextChanged.connect(lambda v, k=p.key: self.changed.emit(k, v))
+            combo.setToolTip(tip)
             g.addWidget(combo, 1, 0, 1, 2)
             self._widgets[p.key] = combo
         else:
@@ -243,7 +269,7 @@ class ParamPanel(QWidget):
                                        None if s.isSliderDown() else self.changed.emit(k, tv(i)))
             else:
                 s.valueChanged.connect(lambda i, k=p.key, tv=to_val: self.changed.emit(k, tv(i)))
-            s.setToolTip(p.help)
+            s.setToolTip(tip)
             g.addWidget(s, 1, 0, 1, 2)
             self._widgets[p.key] = s
         return w

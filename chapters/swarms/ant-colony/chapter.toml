@@ -1,14 +1,33 @@
 title = "Ant Colony: Memory in the Dirt"
 order = 20
-summary = "No ant knows the way, yet the colony finds the shortest path. Stigmergy in action."
+summary = "No ant knows the way, yet the colony finds the shortest path. Build walls, place food, watch them adapt."
 difficulty = 2
 tags = ["stigmergy", "pheromones", "shortest path", "double bridge"]
 compute = "gpu"
 memory = ["environmental", "working"]
 prerequisites = ["swarms.fish-school"]
 controls = [
-  ["Left drag", "Build walls"],
-  ["Right drag", "Erase walls"],
-  ["Shift + click", "Drop a food pile"],
-  ["Ctrl + click", "Choose the ant whose sensors are shown"],
+  ["Wall (1)", "Left drag builds, right drag erases"],
+  ["Food (2)", "Left click drops a pile, right click removes food"],
+  ["Inspect (3)", "Click an ant to follow its sensors"],
 ]
+reality = """
+There are more than 14,000 ant species and they forage very differently. Many use several
+pheromones: some mark "no entry" with a repellent signal (Pharaoh's ants), some recruit
+nest-mates by leading them one by one (tandem running), some navigate mostly by sight and
+sun (desert ants), and crowding itself can change what ants do. Here there are just two
+attractive trails, identical ants and a log-scale nose: enough to show how a colony can
+find short paths without any ant knowing the map.
+"""
+
+[glossary]
+'c(\mathbf{x}, t)' = "Pheromone concentration at place x and time t"
+'\nabla^2 c' = "How much c differs from its surroundings; diffusion evens it out"
+'\delta(\mathbf{x} - \mathbf{x}_k)' = "A deposit exactly at ant k's position"
+'t_a' = "Time since the ant left the nest or found food"
+'S_L,\, S_F,\, S_R' = "Readings of the left, front and right smell sensors"
+'\sigma_{turn}' = "The turn decision: +1 left, 0 straight, -1 right"
+'\theta,\; \theta_{nest}' = "The ant's heading, and the direction of the nest from it"
+'\xi' = "A random number between -1 and 1 (seeded: the same every run)"
+'A,\, B,\, P_A' = "Ants that used branch A and B so far, and the chance the next one picks A"
+'k,\, n' = "Choice-model constants: how big an early lead must be, and how sharply it's amplified"

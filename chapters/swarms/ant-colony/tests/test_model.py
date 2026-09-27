@@ -40,3 +40,32 @@ def test_double_bridge_is_solvable():
     for _ in range(60 * 100):       # ~60 s of exploring before the first delivery (600 ants)
         sim.advance(InputState())
     assert int(sim.delivered.numpy()[0]) > 0
+
+
+def test_wall_tool_builds_rock_that_ants_never_enter():
+    sim = load_sim_class(INFO)(SimContext("cpu", 2))
+    for k in range(40):             # drag a wall straight across the field, right of the nest
+        y = 5 + k * 2.0
+        sim.advance(InputState(mouse=(60.0, y), buttons=frozenset({"left"}), tool="wall"))
+    assert sim.rocks.painted > 0
+    for _ in range(300):
+        sim.advance(InputState())
+    pos = sim.pos.numpy()
+    ix, iy = (pos[:, 0] / 0.5).astype(int), (pos[:, 1] / 0.5).astype(int)
+    assert not sim.rocks.mask[iy, ix].any()
+
+
+def test_food_tool_adds_food_and_counts_it_as_the_learners():
+    sim = load_sim_class(INFO)(SimContext("cpu", 2))
+    before = int(sim.food.numpy().sum())
+    sim.advance(InputState(mouse=(100.0, 45.0), tool="food",
+                           clicks=(("left", (100.0, 45.0)),)))
+    added = int(sim.food.numpy().sum()) - before
+    assert added > 0 and added == sim.user_food_added
+
+
+def test_mark_strength_formula():
+    q, t, tau = sp.symbols("q t_a tau_a", positive=True)
+    rate = q * sp.exp(-t / tau)
+    # after one "memory time" the mark is 1/e as strong
+    assert sp.simplify(rate.subs(t, tau) / q - sp.exp(-1)) == 0

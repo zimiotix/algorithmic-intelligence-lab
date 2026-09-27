@@ -23,6 +23,10 @@ and direction) is its attack vector. The fish have senses:
   even if they never saw you.
 - **Memory.** A fish remembers where it last saw you and keeps fleeing from that spot
   for a moment, even after you disappear.
+- **Rock.** A fish feels rock close to its body and looks ahead three ways (straight,
+  a little left, a little right). If rock blocks the way, it turns toward the freer side.
+- **Hunger.** Every fish slowly gets hungry. A hungry fish swims toward food it can see,
+  and it flees *less*: hunger makes fish brave, or reckless.
 
 ## Things to try
 
@@ -38,5 +42,23 @@ and direction) is its attack vector. The fish have senses:
 > **Kill a rule.** Set *Alignment weight* to 0. The school turns into a buzzing cloud.
 > Set *Separation weight* to 0 and they pile on top of each other.
 
-Turn on the overlays on the right (**1–7**) to see exactly what the white-ringed
-**focus fish** senses and which rules are pulling it where. Click any fish to follow it.
+> **Build a reef.** Pick **Rock** (key 2) and paint a reef. Then hunt around it and watch
+> the school split around the rock and re-form behind it.
+
+> **A risky dinner.** Pick **Food** (key 3) and drop some flakes. Turn on the *Hunger*
+> overlay: gold fish are starving. Now hunt near the food. Hungry fish keep eating while
+> well-fed ones run.
+
+The **Lab** has a hotbar of tools at the bottom (keys **1–4**), a **Guide** on the left
+with experiments that tick themselves off when you manage them, and **Live Math** on the
+right: the rules with the white-ringed **focus fish**'s numbers plugged in. Use
+**Inspect** (key 4) to choose which fish is explained.
+
+## Model vs. nature
+
+This is a model, not a documentary. Real fish combine vision, the lateral line, smell and
+sound, and many species react to only a handful of nearest neighbours rather than to
+everyone within a distance. Real schools mix sizes and species with different habits. Here
+every fish is identical, fear and hunger are single numbers, and fish can even "see"
+through rock. What the model *does* show honestly is the core idea: a coordinated escape
+can emerge from a few local rules, with no leader and no plan.

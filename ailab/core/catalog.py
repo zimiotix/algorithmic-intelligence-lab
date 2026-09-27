@@ -50,6 +50,8 @@ class ChapterInfo:
     prerequisites: list[str] = field(default_factory=list)
     controls: list[tuple[str, str]] = field(default_factory=list)
     status: str = "ready"   # "ready" | "draft"
+    reality: str = ""       # "model vs. nature": what the simulation simplifies
+    glossary: list[tuple[str, str]] = field(default_factory=list)  # (TeX symbol, meaning)
 
     def text(self, name: str) -> str:
         p = self.path / name
@@ -100,6 +102,8 @@ def discover(root: Path = CHAPTERS_DIR, include_drafts: bool = True) -> Catalog:
             tags=list(d.get("tags", [])), compute=d.get("compute", "cpu"),
             memory=list(d.get("memory", [])), prerequisites=list(d.get("prerequisites", [])),
             controls=[tuple(c) for c in d.get("controls", [])], status=d.get("status", "ready"),
+            reality=" ".join(d.get("reality", "").split()),
+            glossary=[(k, " ".join(str(v).split())) for k, v in d.get("glossary", {}).items()],
         )
         if info.status == "draft" and not include_drafts:
             continue

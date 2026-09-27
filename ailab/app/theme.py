@@ -95,18 +95,20 @@ def apply(app: QApplication) -> None:
         pal.setColor(role, QColor(color))
     app.setPalette(pal)
     families = set(QFontDatabase.families())
-    for fam in ("Inter", "Inter Variable", "Ubuntu Sans", "Cantarell", "Noto Sans"):
+    for fam in ("Inter", "Inter Variable", "Ubuntu Sans", "Cantarell", "Noto Sans",
+                "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", "Helvetica Neue"):
         if fam in families:
             f = QFont(fam, 10)
             f.setHintingPreference(QFont.PreferNoHinting)
             app.setFont(f)
             break
-    app.setStyleSheet(QSS)
+    app.setStyleSheet(QSS + QSS_LAB)
 
 
 def mono_family() -> str:
     families = set(QFontDatabase.families())
-    for fam in ("JetBrains Mono", "Ubuntu Mono", "DejaVu Sans Mono", "Noto Sans Mono"):
+    for fam in ("JetBrains Mono", "Ubuntu Mono", "DejaVu Sans Mono", "Noto Sans Mono",
+                "Cascadia Mono", "Consolas", "Menlo"):
         if fam in families:
             return fam
     return "monospace"
@@ -116,3 +118,26 @@ def dots(n: int, total: int = 5, color: str = ACCENT) -> str:
     """Difficulty as rich text dots."""
     return (f"<span style='color:{color}'>{'●' * n}</span>"
             f"<span style='color:{LINE}'>{'●' * (total - n)}</span>")
+
+
+QSS_LAB = f"""
+QFrame#hotbar {{ background: rgba(8,12,20,215); border: 1px solid #243246; border-radius: 14px; }}
+QToolButton[role="tool"] {{ background: transparent; border: 1px solid transparent;
+    border-radius: 10px; padding: 4px 6px; color: {MUTED}; font-size: 11px; font-weight: 600; }}
+QToolButton[role="tool"]:hover {{ background: #16233a; color: {TEXT}; }}
+QToolButton[role="tool"]:checked {{ background: #12324a; border-color: {ACCENT}; color: #e0f2fe; }}
+QFrame#drawer {{ background: {BG1}; border: 1px solid #243246; }}
+QFrame#guide {{ background: {BG1}; border-right: 1px solid {LINE}; }}
+QFrame#mathcard {{ background: #0a1320; border: 1px solid {LINE}; border-radius: 10px; }}
+QFrame#toolcard {{ background: {BG2}; border: 1px solid {LINE}; border-radius: 12px; }}
+QFrame#exp {{ background: transparent; border: 1px solid transparent; border-radius: 10px; }}
+QFrame#exp:hover {{ background: {BG2}; border-color: {LINE}; }}
+QFrame#exp[done="true"] {{ background: #0c2320; border-color: #134e4a; }}
+QFrame#nature {{ background: #151a12; border: 1px solid #2a3320; border-radius: 10px; }}
+QLabel#toast {{ background: rgba(6,40,36,235); border: 1px solid #14b8a6; border-radius: 12px;
+    padding: 12px 18px; color: #ccfbf1; font-size: 13px; }}
+QSplitter::handle {{ background: {LINE}; }}
+QSplitter::handle:hover {{ background: #2f4460; }}
+QProgressBar {{ background: {BG3}; border: none; border-radius: 3px; height: 6px; }}
+QProgressBar::chunk {{ background: {GOOD}; border-radius: 3px; }}
+"""

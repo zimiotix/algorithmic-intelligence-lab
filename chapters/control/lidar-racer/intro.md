@@ -23,14 +23,17 @@ That's it: no learning, no training data. The same inputs always give the same d
 - The **green wedge** is the gap the car chose, and the **green ring** is its aim point.
 - The **amber bar** in front of the car is its *braking distance*. The red tick is the
   nearest thing straight ahead. If the bar reaches the tick, the car must brake.
-- The **bar chart** at the bottom right is the whole scan, one bar per ray.
+- The **bar chart** at the bottom right is the whole scan, one bar per ray, laid out as
+  the driver sees it: left bars are rays to the car's left.
 
 ## Things to try
 
-> **Build a chicane.** Left-click to drop traffic cones on the track. Can you build an
-> obstacle course the car can't solve?
+> **Build a chicane.** Pick **Cone** (key 1) and click, or **Barrier** (key 2) and drag
+> rows of cones across the track. Can you build an obstacle course the car can't solve?
 
 > **Shove it.** Hold the arrow keys to push the car off its line and watch it recover.
+> The camera rides behind the car, so the keys match what you see: **Up** pushes it
+> forward, **Left** swings it left. Press **V** to switch to the whole track.
 
 > **Fewer eyes.** Drop *Lidar rays* to 9. What goes wrong? Now try 361.
 
@@ -39,3 +42,11 @@ That's it: no learning, no training data. The same inputs always give the same d
 
 > **Noisy sensors.** Add *Sensor noise*. Real lidars are noisy. How much can the
 > algorithm tolerate?
+
+## Model vs. nature
+
+Real self-driving race cars are much messier. Their lidars return thousands of noisy 3D
+points, tyres slip and skid (this car can't skid at all: it is a *kinematic* model), and
+real teams combine a quick reflex like this one with a map, a way to know where they are
+on it, and a planned racing line. Follow-the-Gap is a real algorithm used in student
+racing leagues such as F1TENTH, but it is only the reflex layer of a full driving system.

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import sys
 import traceback
-from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -23,25 +21,29 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSpinBox,
+    QSplitter,
     QStackedWidget,
     QTabWidget,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from ..core import compute, settings
+from ..core import compute, paths, settings
 from ..core.catalog import Catalog, ChapterInfo, load_sim_class
 from ..core.sim import SimContext
 from ..core.system import SystemInfo
-from ..text.markdown import split_sections
+from ..text.markdown import split_sections, symbol_table
 from . import theme
+from .lab import GuidePanel, Hotbar, LiveMathPanel, Toast
 from .markdown_view import MarkdownView
+from .responsive import COMPACT, Drawer, FitWidthScroll, FlowGrid, breakpoint
 from .viewport import Viewport
 from .widgets import ChapterCard, Logo, ParamPanel, StatCard, chip, dot_pixmap
 
-THUMBS = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "ailab" / "thumbs"
+THUMBS = paths.cache_dir() / "thumbs"
 
 
 def runs_on_label(info: SystemInfo) -> str:
@@ -53,6 +55,19 @@ def runs_on_label(info: SystemInfo) -> str:
 def device_for(chapter: ChapterInfo) -> str:
     """Heavy chapters go to the GPU when there is one; light ones stay on the CPU."""
     return compute.device() if chapter.compute == "gpu" else "cpu"
+
+
+def menu_button() -> QToolButton:
+    """☰: opens the chapter list when it is tucked away on narrow windows."""
+    b = QToolButton()
+    b.setText("☰")
+    b.setToolTip("Chapters")
+    b.setCursor(Qt.PointingHandCursor)
+    b.setStyleSheet(f"QToolButton {{ background: transparent; border: 1px solid {theme.LINE};"
+                    f" border-radius: 8px; padding: 2px 9px; font-size: 17px; color: {theme.TEXT}; }}"
+                    f"QToolButton:hover {{ background: {theme.BG3}; }}")
+    b.hide()
+    return b
 
 
 # ======================================================================= sidebar
@@ -182,6 +197,9 @@ class HomePage(QScrollArea):
         lay = QVBoxLayout(root)
         lay.setContentsMargins(44, 36, 44, 40)
         lay.setSpacing(18)
+        self._lay = lay
+        self.menu = menu_button()
+        lay.addWidget(self.menu, 0, Qt.AlignLeft)
 
         h1 = QLabel("Watch intelligence emerge from simple, exact rules.")
         h1.setProperty("role", "h1")
@@ -195,8 +213,7 @@ class HomePage(QScrollArea):
         lay.addWidget(h1)
         lay.addWidget(sub)
 
-        stats = QHBoxLayout()
-        stats.setSpacing(12)
+        stats = FlowGrid(min_col=190, spacing=12, max_cols=5)
         gpu = info.cuda_gpu
         self.stat_compute = StatCard("Compute", info.compute_label.split(" · ")[0],
                                      info.compute_name or info.cpu_model,
@@ -210,8 +227,8 @@ class HomePage(QScrollArea):
                                  f"{info.ram_available_mb / 1024:.1f} GB free", theme.TEXT)
         for s in (self.stat_compute, self.stat_render, self.stat_gpu, self.stat_cpu,
                   self.stat_ram):
-            stats.addWidget(s, 1)
-        lay.addLayout(stats)
+            stats.add(s)
+        lay.addWidget(stats)
         notes = info.advice()
         if notes:
             n = QLabel("  ·  ".join(notes))
@@ -236,16 +253,13 @@ class HomePage(QScrollArea):
                 d = QLabel(t.description)
                 d.setProperty("role", "muted")
                 lay.addWidget(d)
-            grid = QGridLayout()
-            grid.setSpacing(16)
-            for i, c in enumerate(t.chapters):
+            grid = FlowGrid(min_col=300, spacing=16, max_cols=4)
+            for c in t.chapters:
                 card = ChapterCard(c, t.color, label)
                 card.clicked.connect(self.chapterChosen)
-                grid.addWidget(card, i // 3, i % 3)
+                grid.add(card)
                 self.cards[c.id] = card
-            for col in range(3):
-                grid.setColumnStretch(col, 1)
-            lay.addLayout(grid)
+            lay.addWidget(grid)
         if catalog.planned:
             lay.addSpacing(10)
             soon = QLabel("COMING NEXT")
@@ -261,6 +275,11 @@ class HomePage(QScrollArea):
             lay.addLayout(row)
         lay.addStretch(1)
         self._queue: list[str] = []
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        m = 20 if breakpoint(self.width()) == COMPACT else 44
+        self._lay.setContentsMargins(m, 24 if m == 20 else 36, m, 40)
 
     def set_gl(self, info: SystemInfo) -> None:
         self.stat_render.set(info.render_gpu_label, info.gl_renderer.split("/")[0])
@@ -297,6 +316,7 @@ class HomePage(QScrollArea):
 # ====================================================================== chapter
 class ChapterPage(QWidget):
     statusText = Signal(str)
+    focusMode = Signal(bool)
 
     def __init__(self, info: SystemInfo):
         super().__init__()
@@ -310,6 +330,7 @@ class ChapterPage(QWidget):
         # --- header
         header = QFrame()
         header.setObjectName("toolbar")
+        self.header = header
         hl = QVBoxLayout(header)
         hl.setContentsMargins(28, 18, 28, 0)
         hl.setSpacing(6)
@@ -325,8 +346,16 @@ class ChapterPage(QWidget):
         self.summary = QLabel()
         self.summary.setProperty("role", "muted")
         self.summary.setWordWrap(True)
-        hl.addLayout(top)
-        hl.addWidget(self.title)
+        self.top_row = QWidget()
+        self.top_row.setLayout(top)
+        top.setContentsMargins(0, 0, 0, 0)
+        hl.addWidget(self.top_row)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(12)
+        self.menu = menu_button()
+        title_row.addWidget(self.menu)
+        title_row.addWidget(self.title, 1)
+        hl.addLayout(title_row)
         hl.addWidget(self.summary)
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
@@ -342,8 +371,10 @@ class ChapterPage(QWidget):
         self.intro = MarkdownView()
         ol.addWidget(self.intro, 3)
         side = QFrame()
+        self.overview_side = side
         side.setObjectName("panel")
-        side.setFixedWidth(340)
+        side.setMinimumWidth(260)
+        side.setMaximumWidth(340)
         sl = QVBoxLayout(side)
         sl.setContentsMargins(22, 24, 22, 22)
         sl.setSpacing(12)
@@ -368,15 +399,13 @@ class ChapterPage(QWidget):
         ol.addWidget(side)
         self.tabs.addTab(ov, "Overview")
 
-        # --- lab
+        # --- lab: Guide | view | Inspector, all resizable; Tab = focus mode
         lab = QWidget()
         ll = QVBoxLayout(lab)
         ll.setContentsMargins(0, 0, 0, 0)
         ll.setSpacing(0)
-        ll.addWidget(self._toolbar())
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(0)
+        self.lab_toolbar = self._toolbar()
+        ll.addWidget(self.lab_toolbar)
         self.view_host = QWidget()
         vh = QGridLayout(self.view_host)
         vh.setContentsMargins(0, 0, 0, 0)
@@ -395,10 +424,42 @@ class ChapterPage(QWidget):
         self.banner.setMaximumWidth(560)
         self.banner.hide()
         vh.addWidget(self.banner, 0, 0, Qt.AlignCenter)
-        body.addWidget(self.view_host, 1)
-        body.addWidget(self._side_panel())
-        ll.addLayout(body, 1)
+        self.hotbar = Hotbar(self.view_host)
+        self.hotbar.chosen.connect(self.set_tool)
+        self.hotbar.hide()
+        self.toast = Toast(self.view_host)
+        self.view_host.installEventFilter(self)
+
+        self.guide = GuidePanel()
+        self.guide.experimentToggled.connect(self._experiment_toggled)
+        self.inspector = self._side_panel()
+        self.split = QSplitter(Qt.Horizontal)
+        self.split.setHandleWidth(1)
+        self.split.addWidget(self.guide)
+        self.split.addWidget(self.view_host)
+        self.split.addWidget(self.inspector)
+        self.split.setCollapsible(1, False)
+        self.split.setStretchFactor(1, 1)
+        sizes = settings.load().get("lab_split")
+        self.split.setSizes(sizes if isinstance(sizes, list) and len(sizes) == 3
+                            else [290, 1000, 340])
+        self._split_save = QTimer(self)
+        self._split_save.setSingleShot(True)
+        self._split_save.timeout.connect(
+            lambda: settings.save({"lab_split": self.split.sizes()}))
+        self.split.splitterMoved.connect(lambda *_: self._split_save.start(600))
+        ll.addWidget(self.split, 1)
         self.tabs.addTab(lab, "Lab")
+        # narrow windows: Guide and Inspector slide over the view instead of squeezing it
+        self.guide_drawer = Drawer(self.view_host, "left", 320)
+        self.insp_drawer = Drawer(self.view_host, "right", 340)
+        self.guide_drawer.toggled.connect(lambda on: self._sync_btn(self.guide_btn, on))
+        self.insp_drawer.toggled.connect(lambda on: self._sync_btn(self.insp_btn, on))
+        self.compact = False
+        self.focus_mode = False
+        self.tool_key = ""
+        self.done: set[str] = set()
+        self.live: LiveMathPanel | None = None
 
         # --- deep dive
         dd = QWidget()
@@ -477,11 +538,110 @@ class ChapterPage(QWidget):
         view.clicked.connect(self.viewport_reset)
         tl.addWidget(view)
         tl.addStretch(1)
+        self._tb_speed = list(self.speed_group.buttons())
+        self._tb_view, self._tb_seed = view, [sl, self.seed, dice]
+        self.guide_btn = QPushButton("◧ Guide")
+        self.insp_btn = QPushButton("Inspector ◨")
+        focus = QPushButton("⛶ Focus")
+        self._focus_btn = focus
+        focus.setToolTip("Only the simulation (Tab). Esc or Tab to come back.")
+        for b in (self.guide_btn, self.insp_btn):
+            b.setCheckable(True)
+            b.setChecked(True)
+            b.setProperty("role", "ghost")
+        focus.setProperty("role", "ghost")
+        self.guide_btn.toggled.connect(lambda on: self._show_pane("guide", on))
+        self.insp_btn.toggled.connect(lambda on: self._show_pane("inspector", on))
+        focus.clicked.connect(lambda: self.set_focus_mode(True))
+        tl.addWidget(self.guide_btn)
+        tl.addWidget(self.insp_btn)
+        tl.addWidget(focus)
+        tl.addSpacing(8)
         self.perf = QLabel()
         self.perf.setProperty("role", "muted")
         self.perf.setStyleSheet(f"font-family:'{theme.mono_family()}'; font-size:12px;")
         tl.addWidget(self.perf)
         return bar
+
+    # -------------------------------------------------------------- responsive
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._responsive()
+
+    def _responsive(self) -> None:
+        if not hasattr(self, "insp_drawer"):      # still being built
+            return
+        w = self.width()
+        self.set_compact(w < 1150)
+        self._fit_toolbar()
+        narrow = w < 980
+        self.title.setStyleSheet(f"font-size:{20 if narrow else 24}px; font-weight:700;")
+        self.overview_side.setVisible(w >= 900)
+
+    def _fit_toolbar(self) -> None:
+        """Like a responsive web toolbar: show everything, then hide the least important
+        items one at a time until the rest fits without squashing."""
+        bar = self.lab_toolbar
+        steps = ([lambda: self.perf.hide()]
+                 + [lambda b=b: b.hide() for b in self._tb_speed if not b.isChecked()]
+                 + [lambda: (self.guide_btn.setText("◧"), self.insp_btn.setText("◨"),
+                             self._focus_btn.setText("⛶"))]
+                 + [lambda: self._tb_view.hide()]
+                 + [lambda: [x.hide() for x in self._tb_seed]]
+                 + [lambda b=b: b.hide() for b in self._tb_speed if b.isChecked()])
+        self.perf.show()
+        for x in self._tb_speed + [self._tb_view] + self._tb_seed:
+            x.show()
+        self.guide_btn.setText("◧ Guide")
+        self.insp_btn.setText("Inspector ◨")
+        self._focus_btn.setText("⛶ Focus")
+        lay = bar.layout()
+        for step in steps:
+            lay.invalidate()
+            if lay.sizeHint().width() <= bar.width():
+                break
+            step()
+
+    def set_compact(self, compact: bool) -> None:
+        """Dock the Guide and Inspector beside the view, or tuck them into drawers."""
+        if compact == self.compact:
+            return
+        self.compact = compact
+        if compact:
+            self.guide_drawer.take(self.guide)
+            self.insp_drawer.take(self.inspector)
+            for b in (self.guide_btn, self.insp_btn):
+                self._sync_btn(b, False)
+        else:
+            g, i = self.guide_drawer.give(), self.insp_drawer.give()
+            self.split.insertWidget(0, g)
+            self.split.insertWidget(2, i)
+            g.show()
+            i.show()
+            sizes = settings.load().get("lab_split")
+            if isinstance(sizes, list) and len(sizes) == 3:
+                self.split.setSizes(sizes)
+            for b in (self.guide_btn, self.insp_btn):
+                self._sync_btn(b, True)
+        self._place_overlays()
+
+    def _show_pane(self, which: str, on: bool) -> None:
+        pane = self.guide if which == "guide" else self.inspector
+        drawer = self.guide_drawer if which == "guide" else self.insp_drawer
+        if self.compact:
+            if on:
+                (self.insp_drawer if which == "guide" else self.guide_drawer).close_drawer()
+                drawer.open_drawer()
+            else:
+                drawer.close_drawer()
+        else:
+            pane.setVisible(on)
+
+    @staticmethod
+    def _sync_btn(button, on: bool) -> None:
+        button.blockSignals(True)
+        button.setChecked(on)
+        button.blockSignals(False)
 
     def viewport_reset(self) -> None:
         self.viewport.camera.reset()
@@ -489,11 +649,10 @@ class ChapterPage(QWidget):
     def _side_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("panel")
-        panel.setFixedWidth(320)
+        panel.setMinimumWidth(250)
         outer = QVBoxLayout(panel)
         outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        scroll = FitWidthScroll()
         inner = QWidget()
         inner.setStyleSheet(f"background:{theme.BG1};")
         self.panel_layout = QVBoxLayout(inner)
@@ -512,15 +671,31 @@ class ChapterPage(QWidget):
         sim = self.sim
         if sim is None:
             return
+        self.live = None
+        if sim.LIVE_MATH:
+            h = QLabel("LIVE MATH")
+            h.setProperty("role", "section")
+            lay.addWidget(h)
+            note = QLabel("The rules, with the focus agent's numbers plugged in right now.")
+            note.setProperty("role", "faint")
+            note.setWordWrap(True)
+            lay.addWidget(note)
+            self.live = LiveMathPanel()
+            self.live.set_specs(sim.LIVE_MATH)
+            lay.addWidget(self.live)
+            lay.addSpacing(8)
+        self._ov_boxes: list = []
         h = QLabel("SEE INSIDE")
         h.setProperty("role", "section")
         lay.addWidget(h)
         for i, o in enumerate(sim.OVERLAYS):
-            cb = QCheckBox(o.label.replace("&", "&&") + (f"   [{i + 1}]" if i < 9 else ""))
+            key = f"Ctrl+{i + 1}" if len(sim.TOOLS) > 1 else f"{i + 1}"
+            cb = QCheckBox(o.label.replace("&", "&&"))
             cb.setChecked(sim.show.get(o.key))
-            cb.setToolTip(o.help)
+            cb.setToolTip((o.help + "  " if o.help else "") + (f"[{key}]" if i < 9 else ""))
             cb.toggled.connect(lambda v, k=o.key: self.sim and self.sim.show.set(k, v))
             cb.setObjectName(f"ov_{i + 1}")
+            self._ov_boxes.append((o.key, cb))
             lay.addWidget(cb)
         lay.addSpacing(8)
         h = QLabel("PARAMETERS")
@@ -569,8 +744,10 @@ class ChapterPage(QWidget):
                         w.deleteLater()
             elif it.widget():
                 it.widget().deleteLater()
-        for key, action in chapter.controls + [("Space · . · R", "Pause · step · restart"),
-                                               ("1 – 9", "Toggle overlays")]:
+        for key, action in chapter.controls + [("1 – 9", "Pick a tool (Lab hotbar)"),
+                                               ("Ctrl + 1 – 9", "Toggle overlays"),
+                                               ("Space · . · R", "Pause · step · restart"),
+                                               ("Tab", "Focus mode: only the simulation")]:
             row = QHBoxLayout()
             k = QLabel(key)
             k.setStyleSheet(f"background:{theme.BG3}; border:1px solid {theme.LINE};"
@@ -632,9 +809,23 @@ class ChapterPage(QWidget):
             if b:
                 b.setChecked(True)
             title, body = self.sections[i]
+            if title.strip().lower() == "the math" and self.chapter:
+                # terms before equations: the notation primer and every symbol, up front
+                try:
+                    cls = type(self.sim) if self.sim else load_sim_class(self.chapter)
+                    table = symbol_table(cls.PARAMS, self.sim.p if self.sim else None,
+                                         self.chapter.glossary)
+                    body = f"## Symbols used here\n\n{table}\n{body}"
+                except Exception:
+                    traceback.print_exc()
             self.deep.set_markdown(f"# {title}\n\n{body}")
 
     def _tab_changed(self, idx: int) -> None:
+        # The Lab gets the room: the header shrinks to the title.
+        self.top_row.setVisible(idx != 1)
+        self.summary.setVisible(idx != 1)
+        if idx != 1 and self.focus_mode:
+            self.set_focus_mode(False)
         if idx == 2 and not self._deep_loaded:
             self._deep_loaded = True
             self._show_section(0)
@@ -668,6 +859,7 @@ class ChapterPage(QWidget):
         self.viewport.clock.paused = False
         self.play.setText("Pause")
         self._rebuild_panel()
+        self._setup_lab(chapter)
         self.statusText.emit(f"{chapter.title} · running on {dev}")
 
     # ---------------------------------------------------------------- actions
@@ -701,10 +893,25 @@ class ChapterPage(QWidget):
             self._step()
         elif name == "R":
             self.restart()
-        elif name.isdigit():
-            cb = self.findChild(QCheckBox, f"ov_{name}")
-            if cb:
-                cb.toggle()
+        elif name.startswith("tool:"):
+            k = int(name[5:]) - 1
+            tools = self.sim.TOOLS if self.sim else []
+            if len(tools) > 1:
+                if k < len(tools):
+                    self.set_tool(tools[k].key)
+            else:                                   # no hotbar: digits toggle overlays
+                self._toggle_overlay(k + 1)
+        elif name.startswith("overlay:"):
+            self._toggle_overlay(int(name[8:]))
+        elif name == "focus":
+            self.set_focus_mode(not self.focus_mode)
+        elif name == "escape" and self.focus_mode:
+            self.set_focus_mode(False)
+
+    def _toggle_overlay(self, n: int) -> None:
+        cb = self.findChild(QCheckBox, f"ov_{n}")
+        if cb:
+            cb.toggle()
 
     def _stats(self, s: dict) -> None:
         self._last_stats = s
@@ -715,8 +922,9 @@ class ChapterPage(QWidget):
             return
         s = self._last_stats
         dev = self.sim.device.replace("cuda:0", "CUDA")
-        self.perf.setText(f"{s.get('fps', 0):5.0f} fps · sim {s.get('compute_ms', 0):5.2f} ms "
-                          f"[{dev}] · draw {s.get('render_ms', 0):4.1f} ms")
+        self.perf.setText(f"{s.get('fps', 0):3.0f} fps · {s.get('compute_ms', 0):4.1f} ms {dev}")
+        self.perf.setToolTip(f"Frames per second, and time per frame spent on the simulation "
+                             f"({dev}). Drawing takes {s.get('render_ms', 0):.1f} ms.")
         try:
             items = self.sim.hud()
         except Exception:
@@ -732,6 +940,106 @@ class ChapterPage(QWidget):
         self.hud.move(16, 16)
         self.hud.show()
         self.hud.raise_()
+        if self.live is not None and self.inspector.isVisible():
+            try:
+                self.live.update_values(self.sim.live_math())
+            except Exception:
+                traceback.print_exc()
+                self.live = None
+        self._check_experiments()
+        for key, cb in getattr(self, "_ov_boxes", []):   # keys can flip overlays (e.g. V)
+            on = bool(self.sim.show.get(key))
+            if cb.isChecked() != on:
+                cb.blockSignals(True)
+                cb.setChecked(on)
+                cb.blockSignals(False)
+
+    # ------------------------------------------------------------ lab furniture
+    def _setup_lab(self, chapter: ChapterInfo) -> None:
+        sim = self.sim
+        self.hotbar.set_tools(sim.TOOLS)
+        keys = [t.key for t in sim.TOOLS]
+        self.set_tool(self.tool_key if self.tool_key in keys else (keys[0] if keys else ""))
+        prog = settings.load().get("progress") or {}
+        self.done = set(prog.get(chapter.id, [])) & {e.key for e in sim.EXPERIMENTS}
+        app_keys = [("1 – 9", "Pick a tool") if len(sim.TOOLS) > 1 else None,
+                    ("Ctrl+1 – 9" if len(sim.TOOLS) > 1 else "1 – 9", "Toggle overlays"),
+                    ("Space  .  R", "Pause, step, restart"),
+                    ("Wheel, middle-drag", "Zoom, pan"),
+                    ("Tab", "Focus mode"), ("F11", "Full screen")]
+        self.guide.set_chapter(list(chapter.controls) + [k for k in app_keys if k],
+                               chapter.reality, sim.EXPERIMENTS, self.done)
+        self._place_overlays()
+
+    def set_tool(self, key: str) -> None:
+        tools = {t.key: t for t in (self.sim.TOOLS if self.sim else [])}
+        tool = tools.get(key)
+        self.tool_key = key if tool else ""
+        self.viewport.set_tool(tool)
+        self.hotbar.set_active(key)
+        self.guide.set_tool(tool)
+        if self.viewport.isVisible():      # focusing a hidden tab's child would switch tabs
+            self.viewport.setFocus()
+
+    def _check_experiments(self) -> None:
+        if not self.sim or not self.chapter:
+            return
+        for e in self.sim.EXPERIMENTS:
+            if e.check and e.key not in self.done:
+                try:
+                    ok = bool(getattr(self.sim, e.check)())
+                except Exception:
+                    ok = False
+                if ok:
+                    self._experiment_toggled(e.key, True, announce=True)
+
+    def _experiment_toggled(self, key: str, done: bool, announce: bool = False) -> None:
+        if not self.chapter:
+            return
+        (self.done.add if done else self.done.discard)(key)
+        prog = dict(settings.load().get("progress") or {})
+        prog[self.chapter.id] = sorted(self.done)
+        settings.save({"progress": prog})
+        self.guide.set_done(key, done)
+        exp = next((e for e in self.sim.EXPERIMENTS if e.key == key), None) if self.sim else None
+        if announce and exp:
+            learn = (f"<br><span style='color:#99f6e4'>{exp.learn}</span>" if exp.learn
+                     else "")
+            self.toast.show_message(f"<b>✓ Experiment complete: {exp.title}</b>{learn}", 7000)
+
+    def set_focus_mode(self, on: bool) -> None:
+        if on == self.focus_mode:
+            return
+        self.focus_mode = on
+        if self.compact:
+            self.guide_drawer.close_drawer(animate=False)
+            self.insp_drawer.close_drawer(animate=False)
+        elif on:
+            self.guide.hide()
+            self.inspector.hide()
+        else:
+            self.guide.setVisible(self.guide_btn.isChecked())
+            self.inspector.setVisible(self.insp_btn.isChecked())
+        self.header.setVisible(not on)
+        self.tabs.tabBar().setVisible(not on)
+        self.lab_toolbar.setVisible(not on)
+        self.focusMode.emit(on)
+        if on:
+            self.toast.show_message("Focus mode · <b>Tab</b> or <b>Esc</b> to come back", 2200)
+        self.viewport.setFocus()
+
+    def _place_overlays(self) -> None:
+        w, h = self.view_host.width(), self.view_host.height()
+        self.hotbar.set_compact(w < 720)
+        self.hotbar.adjustSize()
+        self.hotbar.move(max(8, (w - self.hotbar.width()) // 2), h - self.hotbar.height() - 16)
+        self.hotbar.raise_()
+        self.toast.reposition()
+
+    def eventFilter(self, obj, e) -> bool:
+        if obj is self.view_host and e.type() in (QEvent.Resize, QEvent.Show):
+            self._place_overlays()
+        return super().eventFilter(obj, e)
 
     def _failed(self, msg: str) -> None:
         self.banner.setText(f"<b>Something went wrong</b><br><span style='color:#f87171'>"
@@ -807,7 +1115,7 @@ class SystemDialog(QDialog):
         tip = QLabel("Switching reloads the open chapter. Try CPU only to feel why GPUs matter.")
         tip.setProperty("role", "faint")
         lay.addWidget(tip)
-        if info.is_hybrid:
+        if info.is_hybrid and sys.platform.startswith("linux"):
             nv = QCheckBox("Draw on the NVIDIA GPU too (PRIME offload, applies after restart)")
             nv.setChecked(settings.load().get("render_gpu") == "nvidia")
             nv.toggled.connect(lambda on: settings.save(
@@ -832,7 +1140,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.info, self.catalog = info, catalog
         self.setWindowTitle("Algorithmic Intelligence Lab")
-        self.resize(1560, 940)
         for t in catalog.tracks:
             for c in t.chapters:
                 c._color = t.color
@@ -855,6 +1162,15 @@ class MainWindow(QMainWindow):
         self.home.chapterChosen.connect(self.open_chapter)
         self.chapter.viewport.glReady.connect(self._gl_ready)
         self.chapter.statusText.connect(lambda s: self.status_left.setText(s))
+        self.chapter.focusMode.connect(self._focus_mode)
+        self.chapter.tabs.currentChanged.connect(lambda _: self._fit_panels())
+        self._focus = False
+        self.sidebar_drawer = Drawer(central, "left", 300)
+        self._docked = True
+        for b in (self.home.menu, self.chapter.menu):
+            b.clicked.connect(self.sidebar_drawer.toggle)
+        self.sidebar.chapterChosen.connect(lambda _: self.sidebar_drawer.close_drawer())
+        self.sidebar.homeRequested.connect(lambda: self.sidebar_drawer.close_drawer())
 
         sb = self.statusBar()
         self.status_left = QLabel("Ready")
@@ -888,12 +1204,15 @@ class MainWindow(QMainWindow):
         self.sidebar.select(cid)
         self.pages.setCurrentWidget(self.chapter)
         self.chapter.load(c)
+        self._fit_panels()
         settings.save({"last_chapter": cid})
 
     def go_home(self) -> None:
+        self.chapter.set_focus_mode(False)
         self.chapter.viewport.set_sim(None)
         self.pages.setCurrentWidget(self.home)
         self.status_left.setText("Home")
+        self._fit_panels()
 
     def show_system(self) -> None:
         dlg = SystemDialog(self.info, self)
@@ -906,6 +1225,52 @@ class MainWindow(QMainWindow):
         self._refresh_status()
         if self.chapter.chapter and self.pages.currentWidget() is self.chapter:
             self.chapter.load(self.chapter.chapter, keep_tab=True)
+
+    # ------------------------------------------------------------ screen fitting
+    def show_fitted(self) -> None:
+        """Size the window to the screen it opens on: never bigger than the screen,
+        maximised on laptops, centred otherwise."""
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry()
+        self.setMinimumSize(min(960, avail.width()), min(600, avail.height()))
+        if avail.width() < 1500 or avail.height() < 880:
+            self.showMaximized()
+        else:
+            w = min(1560, int(avail.width() * 0.9))
+            h = min(940, int(avail.height() * 0.9))
+            self.resize(w, h)
+            self.move(avail.x() + (avail.width() - w) // 2, avail.y() + (avail.height() - h) // 2)
+            self.show()
+        self._fit_panels()
+
+    def _fit_panels(self) -> None:
+        """Like a responsive web page: on wide windows the chapter list sits beside the
+        content; on narrow ones (or in the Lab below ~1650 px) it becomes a ☰ drawer."""
+        if not hasattr(self, "sidebar_drawer"):
+            return
+        w = self.width()
+        in_lab = self.pages.currentWidget() is self.chapter and self.chapter.tabs.currentIndex() == 1
+        docked = not self._focus and (w >= 1650 or (w >= 1100 and not in_lab))
+        self.sidebar.setFixedWidth(300 if w >= 1700 else 260)
+        if docked and not self._docked:
+            self.sidebar_drawer.give()
+            self.centralWidget().layout().insertWidget(0, self.sidebar)
+            self.sidebar.show()
+        elif not docked and self._docked:
+            self.centralWidget().layout().removeWidget(self.sidebar)
+            self.sidebar_drawer.take(self.sidebar)
+        self._docked = docked
+        for b in (self.home.menu, self.chapter.menu):
+            b.setVisible(not docked and not self._focus)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._fit_panels()
+
+    def _focus_mode(self, on: bool) -> None:
+        self._focus = on
+        self.statusBar().setVisible(not on)
+        self._fit_panels()
 
     def _toggle_fullscreen(self) -> None:
         self.showNormal() if self.isFullScreen() else self.showFullScreen()

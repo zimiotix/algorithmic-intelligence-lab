@@ -7,6 +7,7 @@ Used by CI-style checks, for chapter thumbnails, and to eyeball visuals quickly:
 from __future__ import annotations
 
 import struct
+import sys
 import time
 import zlib
 from pathlib import Path
@@ -33,11 +34,26 @@ def write_png(path: str | Path, rgb: np.ndarray) -> None:
     Path(path).write_bytes(png)
 
 
+def standalone_context():
+    """A windowless GL 3.3 context: EGL on Linux (works without a display), else the
+    platform default (WGL on Windows, CGL on macOS, GLX on X11)."""
+    import moderngl
+
+    backends = ["egl", None] if sys.platform.startswith("linux") else [None]
+    err: Exception | None = None
+    for backend in backends:
+        try:
+            kw = {"backend": backend} if backend else {}
+            return moderngl.create_standalone_context(require=330, **kw)
+        except Exception as e:
+            err = e
+    raise RuntimeError(f"no headless OpenGL 3.3 context: {err}")
+
+
 def snapshot(info: ChapterInfo, out: str, device: str, frames: int = 240,
              size: tuple[int, int] = (1600, 900), seed: int = 1, mouse: str = "auto",
              overlays: str = "default", zoom: float = 1.0, params: dict | None = None,
              center: str | tuple | None = None) -> dict:
-    import moderngl
 
     from ..render.renderer import Renderer
 
@@ -61,7 +77,7 @@ def snapshot(info: ChapterInfo, out: str, device: str, frames: int = 240,
         sim.advance(script.at(k, sim.dt))
     sim_ms = (time.perf_counter() - t0) * 1000 / max(frames, 1)
 
-    ctx = moderngl.create_standalone_context(require=330, backend="egl")
+    ctx = standalone_context()
     renderer = Renderer(ctx)
     cam = Camera(sim.world)
     cam.zoom = zoom

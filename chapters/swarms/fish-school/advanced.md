@@ -51,6 +51,11 @@ The first alternative is the lateral line; the second is the vision cone of widt
 
 ## The three rules
 
+Each sensed neighbour falls in exactly one zone: closer than the repulsion radius $r_r$,
+between $r_r$ and the orientation radius $r_o$ (the set $O_i$), or between $r_o$ and the
+attraction radius $r_a$ (the set $A_i$). Each rule has a weight $w$ that says how much it
+matters: $w_s$ for separation, $w_a$ for alignment, $w_c$ for cohesion.
+
 Repulsion is weighted so that closer fish push harder, and capped so that a crowd can't
 produce an unbounded force:
 
@@ -74,8 +79,11 @@ $$
 
 ## Fear and working memory
 
-Fear $f_i \in [0, 1]$ decays exponentially, is copied from sensed neighbours with factor
-$c$, and jumps to the threat level $\theta$ when the predator is sensed:
+Fear $f_i$ is a number from 0 (calm) to 1 (terrified). It fades with the time constant
+$\tau_f$ (after $\tau_f$ seconds only about a third is left), is copied from the sensed
+neighbours $N_i$ with the contagion factor $c$, and jumps to the threat level $\theta$
+when the predator is sensed. The predator moves with velocity $\mathbf{v}_p$, and
+$v_{attack} = 40$ is the speed of a real strike:
 
 $$
 f_i \leftarrow \max\!\Big( f_i\, e^{-\Delta t/\tau_f},\;\; c \max_{j \in N_i} f_j,\;\; \theta \Big),
@@ -83,8 +91,8 @@ f_i \leftarrow \max\!\Big( f_i\, e^{-\Delta t/\tau_f},\;\; c \max_{j \in N_i} f_
 \theta = \tfrac12 + \tfrac12 \min\!\Big(\frac{\lVert \mathbf{v}_p \rVert}{v_{attack}}, 1\Big)
 $$
 
-After $h$ hops the alarm is at most $c^h$, so it survives above a level $\epsilon$ for
-$h = \ln\epsilon / \ln c$ hops. With $c = 0.85$ and $\epsilon = 0.3$ that is about 7 fish.
+After $n$ hops the alarm is at most $c^n$, so it survives above a level $\epsilon$ for
+$n = \ln\epsilon / \ln c$ hops. With $c = 0.85$ and $\epsilon = 0.3$ that is about 7 fish.
 
 The memory of the predator's position $\tilde{\mathbf{p}}_i$ has strength $m_i$ that is
 reset to 1 on every sighting and otherwise forgets:
@@ -106,6 +114,44 @@ $$
 where $\hat{\mathbf{a}}_i$ points away from $\tilde{\mathbf{p}}_i$, and
 $\hat{\mathbf{s}}_i = \operatorname{sign}(\hat{\mathbf{v}}_p^{\perp} \cdot (\mathbf{x}_i - \tilde{\mathbf{p}}_i))\,\hat{\mathbf{v}}_p^{\perp}$
 is the side of the predator's path the fish is already on.
+
+## Rock: pressure and a look ahead
+
+Every rock cell $k$ within $r_{rock} = 3$ of the fish pushes it away, gently far off and
+strongly up close. On top of that the fish looks ahead along its heading for a distance
+$L = 7$. If the look hits rock after a free distance $\ell < L$, it compares two more
+looks turned $\pm 0.6$ rad and turns toward the freer side:
+
+$$
+\mathbf{F}^{rock}_i = w_r \sum_{k:\,d_{ik} < r_{rock}} \hat{\mathbf{u}}_{ki}\Big(1 - \frac{d_{ik}}{r_{rock}}\Big)^2
+\;+\; w_r \Big(1 - \frac{\ell}{L}\Big)\, s_i\, \hat{\mathbf{h}}_i^{\perp}
+$$
+
+where $\hat{\mathbf{u}}_{ki}$ points from the rock cell to the fish, and $s_i = +1$
+(turn left) unless the right look is strictly freer ($s_i = -1$). Rock is also solid:
+a step that would end inside it slides along it instead.
+
+## Hunger against fear
+
+Hunger $h_i \in [0, 1]$ grows steadily and drops by $b = 0.25$ with each bite:
+
+$$
+h_i \leftarrow \min\!\Big(h_i + \frac{\Delta t}{\tau_h},\; 1\Big)
+$$
+
+A fish swims toward the nearest food flake it can sense (same vision cone, or twice the
+lateral-line range), and hunger weakens the flee force by a factor $1 - \rho h_i$:
+
+$$
+\mathbf{F}^{food}_i = w_h\, h_i\, \hat{\mathbf{u}}_{food},
+\qquad
+\mathbf{F}^{flee}_i \;\to\; (1 - \rho\, h_i)\,\mathbf{F}^{flee}_i
+$$
+
+So a starving fish ($h_i = 1$) with $\rho = 0.6$ flees at only 40% strength while being
+pulled toward food. All fish within reach of a flake bite it in the same step; the bites
+are counted with integer atomics and removed afterwards, so the order of the GPU threads
+never matters.
 
 ## Motion
 
@@ -158,6 +204,15 @@ suite checks this.
 - **N. O. Handegård et al. (2012)**, *The dynamics of coordinated group hunting and
   collective information transfer among schooling prey*, Current Biology 22.
 
+## Foraging under risk
+
+- **S. L. Lima & L. M. Dill (1990)**, *Behavioral decisions made under the risk of
+  predation: a review and prospectus*, Can. J. Zool. 68. The classic review of how
+  animals trade feeding against safety.
+- **M. Milinski & R. Heller (1978)**, *Influence of a predator on the optimal foraging
+  behaviour of sticklebacks*, Nature 275. Hungry sticklebacks fed in riskier places; the
+  factor $1 - \rho h_i$ here is the simplest caricature of that result.
+
 ## Things to measure (open questions for you)
 
 - **Polarisation** $P = \lVert \frac{1}{N}\sum_i \hat{\mathbf{h}}_i \rVert$ (1 means
@@ -167,3 +222,14 @@ suite checks this.
 - **Blind-spot hunting.** Is an attack from behind more successful? Count *caught*.
 - **Metric vs. topological neighbours.** Starlings react to their ~7 nearest neighbours
   whatever the distance (Ballerini et al., PNAS 2008). What would change here?
+- **Refuges.** Build a reef and count catches with and without it. Does the reef protect
+  the school, or trap it?
+
+## Model vs. nature
+
+Everything here is simplified on purpose. Real fish integrate vision, the lateral line,
+smell and hearing; vision is blocked by rock (here it is not); schools mix individuals of
+different size, hunger and boldness, and personality differences matter (Jolles et al.,
+*Current Biology* 2017). Fear and hunger are single numbers here, while real animals have
+hormones, learning and species-specific escape reflexes (the Mauthner-cell C-start).
+Treat the model as a clear statement of *one* mechanism, not a description of any species.

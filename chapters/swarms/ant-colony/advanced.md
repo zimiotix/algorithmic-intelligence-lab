@@ -64,7 +64,11 @@ so a trail's strength is effectively a *countdown of distance*: stronger near th
 
 ## The steering rule
 
-With sensor readings $S_L, S_F, S_R$ at angle $\pm\theta_s$ and distance $d_s$:
+Each ant has three smell sensors: left, front and right, reading $S_L, S_F, S_R$. The side
+sensors point $\theta_s$ to either side, and all three sit $d_s$ ahead of the ant. A reading
+adds up the pheromone $c$ in the 3×3 cells under the sensor and takes its logarithm, plus
+fixed "cues" for food or the nest nearby. The decision $\sigma_{turn}$ is $+1$ (turn left),
+$0$ (straight on) or $-1$ (turn right):
 
 $$
 S = \ln\!\Big(1 + \sum_{3\times3} c\Big) + \text{cues},
@@ -76,6 +80,11 @@ S = \ln\!\Big(1 + \sum_{3\times3} c\Big) + \text{cues},
 -1 & S_R > S_L
 \end{cases}
 $$
+
+The ant's heading $\theta$ then turns at the turn rate $\omega$. A loaded ant also feels
+the direction of the nest $\theta_{nest}$ with strength $h$ ($[\text{loaded}]$ is 1 when it
+carries food, else 0). Finally it wanders by $\sigma$ times a seeded random number $\xi$
+between $-1$ and $1$:
 
 $$
 \theta \leftarrow \theta + \omega\Delta t\,\Big(\sigma_{turn} + h\,[\text{loaded}]\,\sin(\theta_{nest} - \theta)\Big) + \sigma\sqrt{\Delta t}\;\xi,
@@ -141,3 +150,20 @@ write their id with `atomic_min`, and the lowest id wins, whatever the order.
   branch win across seeds? Compare with $P_A$ above.
 - **From ants to algorithms.** Replace the grid with a graph and you have ACO for the
   travelling salesman problem. A future chapter does exactly that.
+
+## Model vs. nature
+
+This chapter uses two attractive pheromones and identical ants. Real colonies do more:
+
+- **Negative pheromones.** Pharaoh's ants mark unrewarding branches with a repellent
+  "no entry" signal that works alongside the attractive trail (E. J. H. Robinson et al.,
+  *Nature* 438, 2005).
+- **Crowding.** When a trail gets congested, ants are pushed onto the alternative route,
+  so traffic splits instead of jamming (A. Dussutour et al., *Nature* 428, 2004).
+- **Many signals and species.** Trail pheromones with different lifetimes, recruitment by
+  tandem running (N. R. Franks & T. Richardson, *Nature* 439, 2006), and visual
+  navigation in desert ants (R. Wehner, *Desert Navigator*, 2020). See T. J. Czaczkes et
+  al., *Trail pheromones: an integrative view*, Annu. Rev. Entomol. 60 (2015).
+
+A good exercise: add a third, *repellent* channel to the `FieldMemory` and let ants lay it
+where they turn back. Does the colony abandon dead ends faster?

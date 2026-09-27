@@ -32,6 +32,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--size", default="1600x900")
     ap.add_argument("--no-boot", action="store_true", help="skip the system check screen")
     args = ap.parse_args(argv)
+    # Windows consoles/pipes may not be UTF-8: never crash on "·" or "→" in the report.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
 
     from .core import compute, settings, system
 
@@ -70,7 +74,11 @@ def main(argv: list[str] | None = None) -> int:
     print(system.format_report(info), flush=True)
     render_gpu = args.render_gpu or prefs.get("render_gpu", "system")
     if render_gpu == "nvidia" and info.is_hybrid:
-        _prime_offload()
+        if sys.platform.startswith("linux"):
+            _prime_offload()
+        else:
+            print("  --render-gpu nvidia is Linux-only; on Windows choose the GPU for "
+                  "python.exe in Settings → Display → Graphics.", flush=True)
     from .app.main import run_app
 
     return run_app(info, device, args.chapter or None, boot=not args.no_boot)

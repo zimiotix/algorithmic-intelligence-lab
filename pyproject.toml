@@ -12,6 +12,7 @@ dependencies = [
     "moderngl>=5.10",       # OpenGL renderer used inside the Qt viewport
     "markdown-it-py>=3.0",  # chapter text -> rich text
     "sympy>=1.13",          # exact, symbolic math (derivations + tests)
+    "ziamath>=0.13",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +21,9 @@ media = ["manim>=0.19"]
 
 [project.scripts]
 ailab = "ailab.__main__:main"
+
+[project.gui-scripts]
+ailab-gui = "ailab.__main__:main"   # Windows: launches without a console window
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]

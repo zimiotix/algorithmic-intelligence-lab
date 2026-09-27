@@ -3,21 +3,25 @@ with the ModernGL renderer. Mouse/keyboard become an InputState for the simulati
 
 from __future__ import annotations
 
+import math
 import time
 
 import moderngl
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QKeySequence
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from ..core import compute
 from ..core.clock import Clock
+from ..core.params import Tool
 from ..core.sim import InputState, Simulation
+from ..render import palette as pal
 from ..render.camera import Camera
 from ..render.renderer import Renderer
 from ..render.scene import Scene
 
-APP_KEYS = {"Space", "R", ".", "Home"} | {str(i) for i in range(1, 10)}
+APP_KEYS = {"Space", "R", ".", "Home"}
+DIGITS = {str(i) for i in range(1, 10)}
 _BUTTONS = {Qt.LeftButton: "left", Qt.RightButton: "right", Qt.MiddleButton: "middle"}
 _MODS = {Qt.Key_Shift: "Shift", Qt.Key_Control: "Ctrl", Qt.Key_Alt: "Alt"}
 
@@ -32,7 +36,8 @@ def _key_name(event) -> str:
 class Viewport(QOpenGLWidget):
     glReady = Signal(dict)          # renderer info, once
     stats = Signal(dict)            # per-frame timings
-    hotkey = Signal(str)            # app-level keys (pause, step, reset, overlays)
+    hotkey = Signal(str)            # app-level keys: pause, step, reset, "tool:N",
+                                    # "overlay:N", "focus", "escape"
     failed = Signal(str)
 
     def __init__(self, parent=None):
@@ -53,7 +58,15 @@ class Viewport(QOpenGLWidget):
         self._presses: list[str] = []
         self._pan_from: QPointF | None = None
         self._fps = 60.0
+        self.tool: Tool | None = None     # what the learner holds (set by the Lab)
+        self._following = False           # chase camera engaged
         self.frameSwapped.connect(self.update)
+
+    def set_tool(self, tool: Tool | None) -> None:
+        self.tool = tool
+        icon = tool.icon if tool else ""
+        self.setCursor({"hunt": Qt.BlankCursor, "inspect": Qt.PointingHandCursor}.get(
+            icon, Qt.CrossCursor if tool and tool.radius > 0 else Qt.ArrowCursor))
 
     # ------------------------------------------------------------- simulation
     def set_sim(self, sim: Simulation | None) -> None:
@@ -111,6 +124,8 @@ class Viewport(QOpenGLWidget):
                 self.sim = None
                 return
             compute_ms = (time.perf_counter() - t0) * 1000
+            self._chase(real_dt, w, h)
+            scene.px = 1.0 / self.camera.ppu(w, h)
             scene.time = self.sim.t
             try:
                 self.sim.draw(scene)
@@ -118,6 +133,7 @@ class Viewport(QOpenGLWidget):
                 self.failed.emit(f"draw(): {type(e).__name__}: {e}")
                 self.sim = None
                 return
+            self._draw_brush(scene)
         else:
             scene.background("void")
         t1 = time.perf_counter()
@@ -125,6 +141,35 @@ class Viewport(QOpenGLWidget):
         self.renderer.render(scene, fbo, w, h, dpr, self.camera, scene.time)
         self.stats.emit({"fps": self._fps, "compute_ms": compute_ms, "steps": steps,
                          "render_ms": (time.perf_counter() - t1) * 1000})
+
+    def _chase(self, real_dt: float, w: float, h: float) -> None:
+        """Ride along with the agent the simulation asks to follow (if any)."""
+        try:
+            target = self.sim.follow()
+        except Exception:
+            target = None
+        if target is None:
+            if self._following:
+                self._following = False
+                self.camera.reset()
+            return
+        x, y, heading, zoom = target
+        snap = not self._following
+        if snap:
+            self.camera.zoom = zoom
+            self._following = True
+        lead = 0.22 * h / self.camera.ppu(w, h)        # agent sits in the lower part
+        k = 1.0 if snap else 1.0 - math.exp(-max(real_dt, 0.0) / 0.12)
+        self.camera.follow(x, y, heading, lead, k)
+
+    def _draw_brush(self, scene: Scene) -> None:
+        """A ring at the cursor showing the active tool's reach."""
+        if self.tool is None or self.tool.radius <= 0 or self._mouse is None:
+            return
+        m = self.camera.to_world(self._mouse.x(), self._mouse.y(), self.width(), self.height())
+        color = pal.CORAL if "right" in self._buttons else "#e2e8f0"
+        scene.circles(m, self.tool.radius, pal.rgba(color, 0.08), additive=True)
+        scene.circles(m, self.tool.radius, pal.rgba(color, 0.7), ring=scene.px * 1.5)
 
     def _input(self, first: bool) -> InputState:
         mouse = None
@@ -134,7 +179,8 @@ class Viewport(QOpenGLWidget):
         inp = InputState(mouse=mouse, buttons=frozenset(self._buttons),
                          keys=frozenset(self._keys),
                          clicks=tuple(self._clicks) if first else (),
-                         key_presses=tuple(self._presses) if first else ())
+                         key_presses=tuple(self._presses) if first else (),
+                         tool=self.tool.key if self.tool else "")
         if first:
             self._clicks.clear()
             self._presses.clear()
@@ -185,13 +231,29 @@ class Viewport(QOpenGLWidget):
     def enterEvent(self, e) -> None:
         self._mouse = self.mapFromGlobal(self.cursor().pos()).toPointF()
 
+    def event(self, e) -> bool:
+        # Tab would move keyboard focus; in the Lab it toggles focus mode instead.
+        if e.type() == QEvent.KeyPress and e.key() in (Qt.Key_Tab, Qt.Key_Backtab):
+            if not e.isAutoRepeat():
+                self.hotkey.emit("focus")
+            return True
+        return super().event(e)
+
     def keyPressEvent(self, e) -> None:
         if e.isAutoRepeat():
             return
+        if e.key() == Qt.Key_Escape:
+            self.hotkey.emit("escape")
+            return
         name = _key_name(e)
+        ctrl = bool(e.modifiers() & Qt.ControlModifier)
+        if name in DIGITS and not e.modifiers() & Qt.AltModifier:
+            self.hotkey.emit(f"{'overlay' if ctrl else 'tool'}:{name}")
+            return
         if name in APP_KEYS and not self._keys & {"Ctrl", "Alt"}:
             if name == "Home":
                 self.camera.reset()
+                self._following = False          # a chase camera re-snaps
             self.hotkey.emit(name)
             return
         self._keys.add(name)

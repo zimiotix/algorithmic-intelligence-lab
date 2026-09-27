@@ -1,11 +1,26 @@
 name: ci
 on: [push, pull_request]
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      - name: Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1
       - run: uv sync
-      - run: uv run ruff check ailab chapters tools
-      - run: uv run pytest -q     # Warp CPU backend: no GPU needed, same results everywhere
+      - run: uv run ruff check ailab chapters tools tests
+      - name: System check (the same probe every launch runs)
+        run: uv run ailab --sysinfo
+      - run: uv run ailab --list
+      # Warp CPU backend: no GPU needed, same results everywhere
+      - run: uv run pytest -q

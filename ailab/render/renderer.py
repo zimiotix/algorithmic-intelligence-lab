@@ -148,11 +148,11 @@ class Renderer:
         ctx = self.ctx
         size = (max(1, int(round(width * dpr))), max(1, int(round(height * dpr))))
         self._ensure_targets(size)
-        (sx, sy), (ox, oy) = camera.uniforms(width, height)
-        world_u = {"u_scale": (sx, sy), "u_offset": (ox, oy),
+        (sx, sy), (ox, oy), rot = camera.uniforms(width, height)
+        world_u = {"u_scale": (sx, sy), "u_offset": (ox, oy), "u_rot": rot,
                    "u_px": 1.0 / (camera.ppu(width, height) * dpr)}
         screen_u = {"u_scale": (2.0 / width, -2.0 / height), "u_offset": (-1.0, 1.0),
-                    "u_px": 1.0 / dpr}
+                    "u_rot": (1.0, 0.0), "u_px": 1.0 / dpr}
 
         self.fbo_draw.use()
         ctx.viewport = (0, 0, *size)

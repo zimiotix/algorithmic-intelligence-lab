@@ -87,8 +87,8 @@ def run_app(info: SystemInfo, device_pref: str, chapter: str | None, boot: bool 
     n = len(catalog.chapters)
     step("Curriculum", f"{n} chapter{'s' * (n != 1)} in {len(catalog.tracks)} tracks · "
                        f"{len(catalog.planned)} more tracks planned", "info")
-    step("Equations", "LaTeX found: equations render as vector graphics" if latex.available()
-         else "LaTeX not found: equations shown as source", "ok" if latex.available() else "warn")
+    step("Equations", "TeX found: equations typeset by LaTeX" if latex.available()
+         else "No TeX install: using the built-in math renderer", "ok")
     if screen:
         screen.note.setText("  ".join(info.advice()))
         screen.pump(1.1)
@@ -96,7 +96,7 @@ def run_app(info: SystemInfo, device_pref: str, chapter: str | None, boot: bool 
             screen.grab().save(os.environ["AILAB_CAPTURE_BOOT"])
 
     win = MainWindow(info, catalog)
-    win.show()
+    win.show_fitted()
     if screen:
         screen.close()
     if chapter and chapter in catalog.chapters:
@@ -107,7 +107,8 @@ def run_app(info: SystemInfo, device_pref: str, chapter: str | None, boot: bool 
 
 
 def _dev_capture(app, win) -> None:
-    """AILAB_CAPTURE=path.png[,seconds[,tab]] grabs the window and quits (docs, CI, debugging)."""
+    """AILAB_CAPTURE=path.png[,seconds[,tab[,section|focus]]] grabs the window and quits
+    (docs, CI, debugging)."""
     spec = os.environ.get("AILAB_CAPTURE")
     if not spec:
         return
@@ -117,7 +118,9 @@ def _dev_capture(app, win) -> None:
     path, secs = parts[0], float(parts[1]) if len(parts) > 1 else 6.0
     if len(parts) > 2:
         QTimer.singleShot(500, lambda: win.chapter.tabs.setCurrentIndex(int(parts[2])))
-    if len(parts) > 3:
+    if len(parts) > 3 and parts[3] == "focus":
+        QTimer.singleShot(1500, lambda: win.chapter.set_focus_mode(True))
+    elif len(parts) > 3:
         QTimer.singleShot(1500, lambda: win.chapter._show_section(int(parts[3])))
 
     def grab():
