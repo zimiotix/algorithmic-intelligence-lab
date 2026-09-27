@@ -136,6 +136,17 @@ QFrame#exp[done="true"] {{ background: #0c2320; border-color: #134e4a; }}
 QFrame#nature {{ background: #151a12; border: 1px solid #2a3320; border-radius: 10px; }}
 QLabel#toast {{ background: rgba(6,40,36,235); border: 1px solid #14b8a6; border-radius: 12px;
     padding: 12px 18px; color: #ccfbf1; font-size: 13px; }}
+QPushButton#fold {{ background: transparent; border: none; border-radius: 6px; text-align: left;
+    padding: 5px 2px; color: {MUTED}; }}
+QPushButton#fold:hover {{ color: {TEXT}; background: {BG2}; }}
+QPushButton#fold[fold="section"] {{ font-size: 11px; font-weight: 700; letter-spacing: 1.5px; }}
+QPushButton#fold[fold="group"] {{ font-size: 13px; font-weight: 600; color: #cbd5e1;
+    border-top: 1px solid {LINE}; border-radius: 0; padding: 8px 2px 6px 2px; }}
+QPushButton#fold[fold="group"]:hover {{ color: #ffffff; }}
+QPushButton[role="preset"] {{ background: {BG2}; border: 1px solid {LINE}; border-radius: 14px;
+    padding: 5px 10px; font-size: 12px; color: #cbd5e1; }}
+QPushButton[role="preset"]:hover {{ border-color: #2f4460; color: #ffffff; }}
+QPushButton[role="preset"]:checked {{ background: #12324a; border-color: {ACCENT}; color: #e0f2fe; }}
 QSplitter::handle {{ background: {LINE}; }}
 QSplitter::handle:hover {{ background: #2f4460; }}
 QProgressBar {{ background: {BG3}; border: none; border-radius: 3px; height: 6px; }}

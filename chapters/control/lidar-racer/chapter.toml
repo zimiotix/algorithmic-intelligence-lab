@@ -31,5 +31,5 @@ baseline, but it is only the reflex layer of a real driving stack.
 'L_d,\; \kappa' = "Lookahead distance to the aim point, and the curvature of the circle through it"
 '\delta' = "Steering angle of the front wheels"
 'x,\, y,\, \theta,\, v' = "The car's position, heading and speed"
-'d_{front},\; m' = "Free distance straight ahead, and a safety margin (1.5)"
+'d_{front},\; m' = "Free distance straight ahead, and the stopping margin (default 1.5)"
 'v^*,\; a' = "Target speed, and the acceleration the throttle asks for"

@@ -16,8 +16,10 @@ from ailab.core import (
     LiveValue,
     Overlay,
     Param,
+    Preset,
     Simulation,
     Tool,
+    section,
 )
 from ailab.core.params import fmt
 from ailab.render import palette as pal
@@ -26,11 +28,22 @@ from ailab.render import palette as pal
 class Sim(Simulation):
     world = (0.0, 0.0, 160.0, 90.0)
     background = "void"          # "void" | "water" | "soil" | "grass"
+    playback = 1.0               # speed the Lab starts at (0.25, 0.5, 1, 2, 4)
     PARAMS = [                   # every help text appears when the learner hovers
-        Param("n", "Agents", 200, 10, 2000, 10, "How many agents move around.", "N",
-              restart=True),
-        Param("speed", "Speed", 10.0, 1.0, 30.0, 0.5, "How fast every agent moves.", "v",
-              "u/s"),
+        *section(                # groups fold in the Controls panel; the first starts open
+            "World",
+            Param("n", "Agents", 200, 10, 2000, 10, "How many agents move around.", "N",
+                  restart=True),
+        ),
+        *section(
+            "Movement",
+            Param("speed", "Speed", 10.0, 1.0, 30.0, 0.5, "How fast every agent moves.",
+                  "v", "u/s"),
+        ),
+    ]
+    PRESETS = [                  # one click; unmentioned parameters return to defaults
+        Preset("default", "Default", {}, "The standard setting."),
+        Preset("fast", "Fast", {"speed": 25.0}, "Everything at a run."),
     ]
     OVERLAYS = [
         Overlay("heading", "Headings", True, "Which way each agent is going."),

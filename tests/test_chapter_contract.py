@@ -130,3 +130,30 @@ def test_every_parameter_explains_itself(info):
     """Hover cards need a description for every tunable parameter."""
     for p in load_sim_class(info).PARAMS:
         assert len(p.help) >= 15, f"{p.key}: add a help text (shown when hovering)"
+
+
+@pytest.mark.parametrize("info", CHAPTERS, ids=lambda c: c.id)
+def test_presets_and_groups(info):
+    cls = load_sim_class(info)
+    groups = {p.group for p in cls.PARAMS}
+    assert groups == {""} or "" not in groups, "group every parameter, or none"
+    keys = [pr.key for pr in cls.PRESETS]
+    assert len(keys) == len(set(keys)), "preset keys must be unique"
+    specs = {p.key: p for p in cls.PARAMS}
+    for pr in cls.PRESETS:
+        assert pr.title and pr.tip, f"{pr.key}: a preset needs a title and a tip"
+        for k, v in pr.values.items():
+            assert k in specs, f"{pr.key}: unknown parameter {k}"
+            assert specs[k].clamp(v) == v, f"{pr.key}: {k}={v} is outside its range"
+    if cls.PRESETS:                          # a preset is a full, repeatable starting point
+        a, b = run(info, 5, steps=1), run(info, 5, steps=1)
+        pr = cls.PRESETS[-1]
+        for sim in (a, b):
+            sim.set_param(cls.PARAMS[-1].key, cls.PARAMS[-1].lo
+                          if cls.PARAMS[-1].lo is not None else cls.PARAMS[-1].default)
+            sim.apply_values(pr.values)
+            for k, spec in specs.items():
+                assert sim.p.get(k) == spec.clamp(pr.values.get(k, sim.p.default(k)))
+            for _ in range(10):
+                sim.advance(ScriptedInput().at(0, sim.dt))
+        assert a.digest() == b.digest()

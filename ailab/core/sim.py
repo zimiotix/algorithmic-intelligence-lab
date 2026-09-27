@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .params import Experiment, LiveEq, LiveValue, Overlay, Param, Tool, Values
+from .params import Experiment, LiveEq, LiveValue, Overlay, Param, Preset, Tool, Values
 
 
 @dataclass
@@ -57,11 +57,13 @@ class Simulation:
     world: tuple[float, float, float, float] = (0.0, 0.0, 160.0, 90.0)  # x0, y0, x1, y1
     dt: float = 1.0 / 60.0
     background: str = "void"
+    playback: float = 1.0   # speed the Lab starts at (0.25, 0.5, 1, 2 or 4)
     # False when the default configuration uses no randomness at all (the seed only
     # matters once e.g. sensor noise is switched on).
     seeded: bool = True
     PARAMS: list[Param] = []
     OVERLAYS: list[Overlay] = []
+    PRESETS: list[Preset] = []          # named parameter sets, one click in Controls
     TOOLS: list[Tool] = []              # hotbar; the first one is active at start
     EXPERIMENTS: list[Experiment] = []  # guided things to try, shown in the Guide
     LIVE_MATH: list[LiveEq] = []        # equations evaluated live for the focus agent
@@ -128,6 +130,21 @@ class Simulation:
             self.reset(self.seed)
         else:
             self.on_param(key)
+
+    def apply_values(self, values: dict) -> None:
+        """Set every parameter at once: the given values, defaults for the rest.
+        Restarts once if a restart-only parameter changed, else updates live."""
+        changed = []
+        for spec in self.PARAMS:
+            v = spec.clamp(values.get(spec.key, self.p.default(spec.key)))
+            if v != self.p.get(spec.key):
+                self.p.set(spec.key, v)
+                changed.append(spec)
+        if any(c.restart for c in changed):
+            self.reset(self.seed)
+        else:
+            for c in changed:
+                self.on_param(c.key)
 
     def on_param(self, key: str) -> None:
         """Hook for live (non-restarting) parameter changes."""

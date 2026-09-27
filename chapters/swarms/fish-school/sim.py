@@ -26,8 +26,10 @@ from ailab.core import (
     LiveValue,
     Overlay,
     Param,
+    Preset,
     Simulation,
     Tool,
+    section,
 )
 from ailab.core.memory import Grid2D, TraceMemory, forget
 from ailab.core.params import fmt
@@ -40,7 +42,6 @@ MAX_PELLETS = 192
 PELLET_BITES = 6
 N_FORCES = 7  # separation, alignment, cohesion, flee, tank, rock, food
 SCENARIOS = ("Open tank", "Reef", "Channel")
-LOOK_SPREAD = wp.constant(0.6)  # radians between the straight-ahead look and the side looks
 
 
 @wp.struct
@@ -58,6 +59,7 @@ class School:
     w_rock: float
     r_rock: float
     look: float
+    look_spread: float
     w_food: float
     r_food: float
     eat_r: float
@@ -230,8 +232,8 @@ def school_step(grid: wp.uint64, P: School, g: Grid2D, blocked: wp.array2d(dtype
     f_rock = obstacle_push(blocked, g, p, P.r_rock) * P.w_rock
     ahead = obstacle_clearance(blocked, g, p, h, P.look)
     if ahead < P.look:
-        c_left = obstacle_clearance(blocked, g, p, rotate(h, LOOK_SPREAD), P.look)
-        c_right = obstacle_clearance(blocked, g, p, rotate(h, -LOOK_SPREAD), P.look)
+        c_left = obstacle_clearance(blocked, g, p, rotate(h, P.look_spread), P.look)
+        c_right = obstacle_clearance(blocked, g, p, rotate(h, -P.look_spread), P.look)
         turn = wp.vec2(-h[1], h[0])
         if c_right > c_left:
             turn = -turn
@@ -346,52 +348,123 @@ def build_rocks(name: str, rocks: ObstacleGrid, rng: np.random.Generator) -> Non
 class Sim(Simulation):
     world = (0.0, 0.0, WIDTH, HEIGHT)
     background = "water"
+    playback = 2.0
     PARAMS = [
-        Param("scenario", "Tank", "Open tank", choices=SCENARIOS, restart=True,
-              help="Start empty, with a reef, or with a wall that has one gap."),
-        Param("n_fish", "Fish", 1500, 50, 20000, 50, "How many fish in the tank.", "N",
-              restart=True, cpu_default=400),
-        Param("r_rep", "Repulsion radius", 1.8, 0.2, 5.0, 0.1,
-              "Closer than this, a fish moves away to avoid collision.", "r_r"),
-        Param("r_ori", "Orientation radius", 4.0, 0.5, 12.0, 0.1,
-              "Within this band, fish copy their neighbours' heading.", "r_o"),
-        Param("r_att", "Attraction radius", 9.0, 2.0, 20.0, 0.5,
-              "Up to this far, fish are drawn toward the group.", "r_a"),
-        Param("fov", "Field of view", 300.0, 60.0, 360.0, 5.0,
-              "Width of the vision cone; the rest is a blind spot behind.", "\\phi", "deg"),
-        Param("r_lat", "Lateral line range", 2.0, 0.0, 8.0, 0.1,
-              "Pressure sense along the body: works all around, but only up close.", "r_l"),
-        Param("w_sep", "Separation weight", 3.0, 0.0, 6.0, 0.1,
-              "How hard fish avoid bumping into each other. At 0 they pile up.", "w_s"),
-        Param("w_ali", "Alignment weight", 1.4, 0.0, 6.0, 0.1,
-              "How strongly fish copy their neighbours' heading. At 0 the school becomes a "
-              "buzzing cloud.", "w_a"),
-        Param("w_coh", "Cohesion weight", 0.5, 0.0, 6.0, 0.1,
-              "How strongly fish are drawn toward the group. High: tight balls.", "w_c"),
-        Param("w_flee", "Flee weight", 4.0, 0.0, 10.0, 0.1,
-              "How hard a fish steers away from the predator it remembers.", "w_f"),
-        Param("w_rock", "Rock avoidance", 3.0, 0.0, 8.0, 0.1,
-              "How hard fish steer away from rock they feel or see ahead.", "w_r"),
-        Param("w_food", "Food drive", 2.5, 0.0, 8.0, 0.1,
-              "Pull toward visible food, scaled by hunger.", "w_h"),
-        Param("hunger_tau", "Hunger grows over", 20.0, 2.0, 120.0, 1.0,
-              "Seconds for an unfed fish to go from full to starving.", "\\tau_h", "s"),
-        Param("risk", "Hunger overrides fear", 0.6, 0.0, 1.0, 0.05,
-              "How much hunger weakens the urge to flee. 0 = safety always first.", "\\rho"),
-        Param("cruise", "Cruise speed", 8.0, 1.0, 20.0, 0.5,
-              "The relaxed swimming speed of a calm fish.", "v_0", "u/s"),
-        Param("burst", "Burst speed", 24.0, 5.0, 45.0, 0.5, "Speed when terrified.", "v_b"),
-        Param("r_pred", "Predator detection range", 18.0, 4.0, 40.0, 0.5,
-              "How far away a fish can notice the predator (if it is in view).", "r_p"),
-        Param("flee_side", "Sideways escape", 0.8, 0.0, 3.0, 0.05,
-              "How much fish dodge sideways off the predator's path (fountain effect).", "k"),
-        Param("contagion", "Alarm contagion", 0.85, 0.0, 1.0, 0.01,
-              "Fraction of a neighbour's fear a fish copies. Near 1: panic spreads far.", "c"),
-        Param("fear_tau", "Fear fades over", 1.5, 0.1, 10.0, 0.1,
-              "How quickly a scared fish calms down. Long: panic lingers.", "\\tau_f", "s"),
-        Param("mem_tau", "Memory fades over", 2.0, 0.1, 15.0, 0.1,
-              "How long a fish keeps fleeing from where it last saw the predator.", "\\tau_m",
-              "s"),
+        *section(
+            "Tank",
+            Param("scenario", "Tank", "Open tank", choices=SCENARIOS, restart=True,
+                  help="Start empty, with a reef, or with a wall that has one gap."),
+            Param("n_fish", "Fish", 1500, 50, 20000, 50, "How many fish in the tank.", "N",
+                  restart=True, cpu_default=400),
+        ),
+        *section(
+            "The three rules",
+            Param("r_rep", "Repulsion radius", 1.8, 0.2, 5.0, 0.1,
+                  "Closer than this, a fish moves away to avoid collision.", "r_r"),
+            Param("r_ori", "Orientation radius", 4.0, 0.5, 12.0, 0.1,
+                  "Within this band, fish copy their neighbours' heading.", "r_o"),
+            Param("r_att", "Attraction radius", 9.0, 2.0, 20.0, 0.5,
+                  "Up to this far, fish are drawn toward the group.", "r_a"),
+            Param("w_sep", "Separation weight", 3.0, 0.0, 6.0, 0.1,
+                  "How hard fish avoid bumping into each other. At 0 they pile up.", "w_s"),
+            Param("w_ali", "Alignment weight", 1.4, 0.0, 6.0, 0.1,
+                  "How strongly fish copy their neighbours' heading. At 0 the school becomes "
+                  "a buzzing cloud.", "w_a"),
+            Param("w_coh", "Cohesion weight", 0.5, 0.0, 6.0, 0.1,
+                  "How strongly fish are drawn toward the group. High: tight balls.", "w_c"),
+        ),
+        *section(
+            "Senses",
+            Param("fov", "Field of view", 300.0, 60.0, 360.0, 5.0,
+                  "Width of the vision cone; the rest is a blind spot behind.", "\\phi", "deg"),
+            Param("r_lat", "Lateral line range", 2.0, 0.0, 8.0, 0.1,
+                  "Pressure sense along the body: works all around, but only up close.", "r_l"),
+            Param("r_pred", "Predator detection range", 18.0, 4.0, 40.0, 0.5,
+                  "How far away a fish can notice the predator (if it is in view).", "r_p"),
+            Param("r_food", "Food sight range", 16.0, 2.0, 40.0, 0.5,
+                  "How far away a fish can see food. Beyond this, food doesn't exist for it.",
+                  "r_{food}"),
+            Param("r_rock", "Rock feeling range", 3.0, 1.0, 8.0, 0.1,
+                  "Rock closer than this pushes the fish away, harder the closer it is.",
+                  "r_{rock}"),
+            Param("look", "Look-ahead distance", 7.0, 1.0, 20.0, 0.5,
+                  "How far ahead a fish checks for rock. Short: it notices walls late.", "L"),
+            Param("look_spread", "Side-look angle", 0.6, 0.1, 1.5, 0.05,
+                  "How far left and right the two extra looks turn when rock is ahead.",
+                  "", "rad"),
+        ),
+        *section(
+            "Fear and escape",
+            Param("w_flee", "Flee weight", 4.0, 0.0, 10.0, 0.1,
+                  "How hard a fish steers away from the predator it remembers.", "w_f"),
+            Param("flee_side", "Sideways escape", 0.8, 0.0, 3.0, 0.05,
+                  "How much fish dodge sideways off the predator's path (fountain effect).",
+                  "k"),
+            Param("contagion", "Alarm contagion", 0.85, 0.0, 1.0, 0.01,
+                  "Fraction of a neighbour's fear a fish copies. Near 1: panic spreads far.",
+                  "c"),
+            Param("fear_tau", "Fear fades over", 1.5, 0.1, 10.0, 0.1,
+                  "How quickly a scared fish calms down. Long: panic lingers.", "\\tau_f", "s"),
+            Param("mem_tau", "Memory fades over", 2.0, 0.1, 15.0, 0.1,
+                  "How long a fish keeps fleeing from where it last saw the predator.",
+                  "\\tau_m", "s"),
+        ),
+        *section(
+            "Hunger and food",
+            Param("w_food", "Food drive", 2.5, 0.0, 8.0, 0.1,
+                  "Pull toward visible food, scaled by hunger.", "w_h"),
+            Param("hunger_tau", "Hunger grows over", 20.0, 2.0, 120.0, 1.0,
+                  "Seconds for an unfed fish to go from full to starving.", "\\tau_h", "s"),
+            Param("risk", "Hunger overrides fear", 0.6, 0.0, 1.0, 0.05,
+                  "How much hunger weakens the urge to flee. 0 = safety always first.",
+                  "\\rho"),
+            Param("bite", "Bite size", 0.25, 0.05, 1.0, 0.05,
+                  "How much one bite lowers hunger. 1: a single bite fills a fish up.", "b"),
+            Param("eat_r", "Bite reach", 0.9, 0.3, 3.0, 0.1,
+                  "How close a fish must be to food to take a bite."),
+        ),
+        *section(
+            "Swimming",
+            Param("cruise", "Cruise speed", 8.0, 1.0, 20.0, 0.5,
+                  "The relaxed swimming speed of a calm fish.", "v_0", "u/s"),
+            Param("burst", "Burst speed", 24.0, 5.0, 45.0, 0.5, "Speed when terrified.", "v_b"),
+            Param("max_acc", "Steering strength", 30.0, 5.0, 80.0, 1.0,
+                  "How sharply a fish can turn and speed up. Low: slow, wide turns.",
+                  "a_{max}"),
+            Param("k_speed", "Speed keeping", 2.0, 0.2, 8.0, 0.1,
+                  "How quickly a fish returns to the speed it wants.", "k_v"),
+        ),
+        *section(
+            "Walls and rock",
+            Param("w_rock", "Rock avoidance", 3.0, 0.0, 8.0, 0.1,
+                  "How hard fish steer away from rock they feel or see ahead.", "w_r"),
+            Param("w_wall", "Tank wall push", 4.0, 0.0, 10.0, 0.1,
+                  "How hard the glass walls push fish back toward the middle."),
+            Param("margin", "Wall margin", 12.0, 2.0, 30.0, 0.5,
+                  "How far from the glass fish start turning back."),
+        ),
+        *section(
+            "Predator",
+            Param("v_attack", "Strike speed", 40.0, 10.0, 80.0, 1.0,
+                  "How fast your cursor must move to count as a real strike: it scares fish "
+                  "most and can catch them.", "v_{attack}", "u/s"),
+            Param("r_catch", "Catch radius", 1.4, 0.3, 5.0, 0.1,
+                  "How close a strike must pass to catch a fish."),
+        ),
+    ]
+    PRESETS = [
+        Preset("default", "Default", {}, "The standard school."),
+        Preset("ball", "Bait ball", {"w_coh": 2.5, "r_att": 14.0, "w_ali": 0.8},
+               "Strong cohesion packs the school into one dense ball."),
+        Preset("cloud", "No alignment", {"w_ali": 0.0},
+               "Nobody copies anyone's heading: a buzzing cloud that goes nowhere."),
+        Preset("calm", "No panic", {"contagion": 0.0},
+               "Only fish that see you react. Watch the school get picked apart."),
+        Preset("jumpy", "Hair trigger", {"contagion": 0.97, "fear_tau": 5.0, "r_pred": 30.0},
+               "Fear spreads far and lingers. One pass empties the tank."),
+        Preset("hungry", "Starving", {"hunger_tau": 4.0, "risk": 1.0},
+               "Drop food: starving fish ignore danger to eat."),
+        Preset("reef", "Reef", {"scenario": "Reef"}, "A rocky reef to hide in."),
     ]
     OVERLAYS = [
         Overlay("zones", "Perception zones", True, "The focus fish's three zones and vision cone."),
@@ -549,17 +622,18 @@ class Sim(Simulation):
         s.r_rep, s.r_ori, s.r_att = p.r_rep, max(p.r_ori, p.r_rep), max(p.r_att, p.r_ori)
         s.cos_fov = float(np.cos(np.radians(p.fov) / 2))
         s.r_lat = p.r_lat
-        s.w_sep, s.w_ali, s.w_coh, s.w_flee, s.w_wall = p.w_sep, p.w_ali, p.w_coh, p.w_flee, 4.0
-        s.w_rock, s.r_rock, s.look = p.w_rock, 3.0, 7.0
-        s.w_food, s.r_food, s.eat_r = p.w_food, 16.0, 0.9
-        s.hunger_tau, s.bite, s.risk = p.hunger_tau, 0.25, p.risk
+        s.w_sep, s.w_ali, s.w_coh, s.w_flee = p.w_sep, p.w_ali, p.w_coh, p.w_flee
+        s.w_wall = p.w_wall
+        s.w_rock, s.r_rock, s.look, s.look_spread = p.w_rock, p.r_rock, p.look, p.look_spread
+        s.w_food, s.r_food, s.eat_r = p.w_food, p.r_food, p.eat_r
+        s.hunger_tau, s.bite, s.risk = p.hunger_tau, p.bite, p.risk
         s.n_pellets = MAX_PELLETS
         s.cruise, s.burst = p.cruise, max(p.burst, p.cruise)
-        s.max_acc, s.k_speed = 30.0, 2.0
+        s.max_acc, s.k_speed = p.max_acc, p.k_speed
         s.r_pred, s.flee_side = p.r_pred, p.flee_side
         s.fear_tau, s.contagion, s.mem_tau = p.fear_tau, p.contagion, p.mem_tau
-        s.r_catch, s.v_attack = 1.4, 40.0
-        s.width, s.height, s.margin = WIDTH, HEIGHT, 12.0
+        s.r_catch, s.v_attack = p.r_catch, p.v_attack
+        s.width, s.height, s.margin = WIDTH, HEIGHT, p.margin
         s.dt = self.dt
         s.pred_pos = wp.vec2(*self.pred_pos)
         s.pred_vel = wp.vec2(*self.pred_vel)
@@ -761,11 +835,12 @@ class Sim(Simulation):
         s.circles(pos[f], 1.4, pal.rgba("#ffffff", 0.75, 1.1), ring=0.09)
         if self.show.look:
             hv = vel[f] / max(np.linalg.norm(vel[f]), 1e-6)
-            for k, a in enumerate((LOOK_SPREAD, 0.0, -LOOK_SPREAD)):
+            look = self.p.look
+            for k, a in enumerate((self.p.look_spread, 0.0, -self.p.look_spread)):
                 u = np.array([hv[0] * np.cos(a) - hv[1] * np.sin(a),
                               hv[0] * np.sin(a) + hv[1] * np.cos(a)])
-                c = self._clearance(pos[f], u, 7.0)
-                hit = c < 7.0
+                c = self._clearance(pos[f], u, look)
+                hit = c < look
                 col = pal.rgba(pal.REPULSE if hit else pal.SENSE, 0.75 if k == 1 else 0.45)
                 s.lines(pos[f], pos[f] + u * c, 0.07, col, additive=True)
                 if hit:
@@ -782,7 +857,7 @@ class Sim(Simulation):
         # the predator (your cursor, while you hold the Hunt tool)
         if self.pred_on:
             pp = self.pred_pos
-            threat = min(np.linalg.norm(self.pred_vel) / 40.0, 1.0)
+            threat = min(np.linalg.norm(self.pred_vel) / self.p.v_attack, 1.0)
             s.circles(pp, P.r_pred, pal.rgba(pal.CORAL, 0.10 + 0.25 * threat), ring=0.15)
             s.glow(pp, 6.0, pal.rgba(pal.CORAL, 0.10 + 0.25 * threat))
             s.sprites("predator", pp, self.pred_heading, (7.0, 2.3), pal.rgba("#475569"),

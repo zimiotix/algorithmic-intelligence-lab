@@ -1,5 +1,5 @@
-"""The Lab's side furniture: tool hotbar, Guide panel (tool, experiments, controls, model
-vs. nature), live-math cards and toasts. Everything is generic: chapters only declare
+"""The Lab's side furniture: tool hotbar, Guide panel (tool, live math, goals, keys, model
+vs. nature, each folding away), live-math cards and toasts. Everything is generic: chapters only declare
 TOOLS, EXPERIMENTS and LIVE_MATH, and implement ``live_math()``."""
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from ..core.params import Experiment, LiveEq, LiveValue, Tool
 from ..text import latex
 from . import theme
 from .markdown_view import rasterize_svg
-from .responsive import FitWidthScroll
+from .responsive import FitWidthScroll, Fold
 
 
 # ------------------------------------------------------------------- icons
@@ -358,7 +358,9 @@ class _ExperimentRow(QFrame):
 
 
 class GuidePanel(QFrame):
-    """Left side of the Lab: what you hold, what to try, how to drive, what's simplified."""
+    """Left side of the Lab: what you hold, the maths live, goals to try, the keys and
+    what the model simplifies. Everything but the tool folds away; goals and notes start
+    closed so the panel stays calm."""
 
     experimentToggled = Signal(str, bool)
 
@@ -372,13 +374,13 @@ class GuidePanel(QFrame):
         inner = QWidget()
         inner.setStyleSheet(f"background:{theme.BG1};")
         self.lay = QVBoxLayout(inner)
-        self.lay.setContentsMargins(16, 16, 16, 18)
-        self.lay.setSpacing(10)
+        self.lay.setContentsMargins(14, 12, 14, 18)
+        self.lay.setSpacing(6)
         scroll.setWidget(inner)
         outer.addWidget(scroll)
 
         # tool card
-        self.lay.addWidget(_section("IN YOUR HAND"))
+        self.tool_fold = Fold("IN YOUR HAND", "guide:tool", True)
         self.tool_card = QFrame()
         self.tool_card.setObjectName("toolcard")
         tl = QVBoxLayout(self.tool_card)
@@ -396,50 +398,64 @@ class GuidePanel(QFrame):
         self.tool_text.setWordWrap(True)
         self.tool_text.setStyleSheet("font-size:12px;")
         tl.addWidget(self.tool_text)
-        self.lay.addWidget(self.tool_card)
+        self.tool_fold.body.addWidget(self.tool_card)
+        self.lay.addWidget(self.tool_fold)
 
-        # experiments
-        self.lay.addSpacing(4)
-        row = QHBoxLayout()
-        row.addWidget(_section("EXPERIMENTS"))
-        row.addStretch(1)
-        self.progress_label = QLabel()
-        self.progress_label.setProperty("role", "faint")
-        row.addWidget(self.progress_label)
-        self.lay.addLayout(row)
+        # live maths
+        self.live_fold = Fold("LIVE MATH", "guide:live", True,
+                              tip="The rules, with the focus agent's numbers plugged in")
+        note = QLabel("The rules, with the focus agent's numbers plugged in right now.")
+        note.setProperty("role", "faint")
+        note.setWordWrap(True)
+        self.live_fold.body.addWidget(note)
+        self.live = LiveMathPanel()
+        self.live_fold.body.addWidget(self.live)
+        self.lay.addWidget(self.live_fold)
+
+        # goals (optional: closed by default; while closed they tick silently)
+        self.goals = Fold("GOALS", "guide:goals", False,
+                          tip="Optional things to try. They tick themselves off; while this "
+                              "is closed they do it quietly.")
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.setFixedHeight(6)
-        self.lay.addWidget(self.progress)
+        self.goals.body.addWidget(self.progress)
         self.exp_box = QVBoxLayout()
         self.exp_box.setSpacing(2)
-        self.lay.addLayout(self.exp_box)
+        self.goals.body.addLayout(self.exp_box)
         self.rows: dict[str, _ExperimentRow] = {}
+        self.lay.addWidget(self.goals)
 
-        # controls
-        self.lay.addSpacing(6)
-        self.lay.addWidget(_section("CONTROLS"))
+        # keys
+        self.keys = Fold("KEYS", "guide:keys", False)
         self.controls = QLabel()
         self.controls.setWordWrap(True)
         self.controls.setTextFormat(Qt.RichText)
-        self.lay.addWidget(self.controls)
+        self.keys.body.addWidget(self.controls)
+        self.lay.addWidget(self.keys)
 
         # model vs nature
-        self.lay.addSpacing(6)
+        self.nature_fold = Fold("MODEL VS. NATURE", "guide:nature", False,
+                                tip="What this model simplifies about the real thing")
         self.nature = QFrame()
         self.nature.setObjectName("nature")
         nl = QVBoxLayout(self.nature)
         nl.setContentsMargins(12, 10, 12, 12)
-        nl.setSpacing(4)
-        nh = QLabel("MODEL VS. NATURE")
-        nh.setStyleSheet("color:#a3b18a; font-size:11px; font-weight:700; letter-spacing:1.5px;")
         self.nature_text = QLabel()
         self.nature_text.setWordWrap(True)
         self.nature_text.setStyleSheet("color:#c5cfb5; font-size:12px;")
-        nl.addWidget(nh)
         nl.addWidget(self.nature_text)
-        self.lay.addWidget(self.nature)
+        self.nature_fold.body.addWidget(self.nature)
+        self.lay.addWidget(self.nature_fold)
         self.lay.addStretch(1)
+
+    @property
+    def live_visible(self) -> bool:
+        return self.isVisible() and self.live_fold.opened and bool(self.live.cards)
+
+    def set_live(self, specs: list[LiveEq]) -> None:
+        self.live.set_specs(specs)
+        self.live_fold.setVisible(bool(specs))
 
     # -------------------------------------------------------------- content
     def set_chapter(self, controls: list, reality: str, experiments: list[Experiment],
@@ -490,8 +506,8 @@ class GuidePanel(QFrame):
         k = sum(r.done for r in self.rows.values())
         self.progress.setMaximum(max(n, 1))
         self.progress.setValue(k)
-        self.progress_label.setText(f"{k} / {n}" if n else "")
-        self.progress.setVisible(n > 0)
+        self.goals.set_badge(f"{k} / {n}" if n else "")
+        self.goals.setVisible(n > 0)
 
 
 # -------------------------------------------------------------------- toast

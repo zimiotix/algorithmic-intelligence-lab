@@ -11,6 +11,8 @@
 - Lab kit per chapter: `TOOLS`, `EXPERIMENTS` (+ `check` methods), `LIVE_MATH` (+ `terms`
   and `live_math()`), `reality` and `[glossary]` in chapter.toml. The contract tests
   enforce them, and every `Param` needs a `help` text (it is the hover card).
+- `PARAMS` grouped with `section(...)`, plus `PRESETS`; no magic constants in kernels
+  (a behaviour-shaping number is a `Param`). The contract test checks presets.
 - Terms before equations: define symbols in words before each display equation.
 - Cross-platform: `encoding="utf-8"` on all text IO, app files via `ailab.core.paths`,
   headless GL via `snapshot.standalone_context()`. CI runs Ubuntu, Windows and macOS.

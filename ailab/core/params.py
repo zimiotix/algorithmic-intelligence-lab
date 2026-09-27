@@ -7,7 +7,7 @@ Advanced text refers to them by symbol, and tests read the same defaults.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 
@@ -25,6 +25,7 @@ class Param:
     choices: tuple[str, ...] | None = None
     restart: bool = False     # changing it restarts the simulation
     cpu_default: Any = None   # smaller default when running on the CPU backend
+    group: str = ""           # heading it is listed under in the Lab (see ``section``)
 
     @property
     def kind(self) -> str:
@@ -71,6 +72,7 @@ class Values:
                 d = s.cpu_default
             vals[s.key] = d
         object.__setattr__(self, "_vals", vals)
+        object.__setattr__(self, "_defaults", dict(vals))
 
     def __getattr__(self, key: str) -> Any:
         try:
@@ -91,11 +93,33 @@ class Values:
     def spec(self, key: str):
         return self._specs[key]
 
+    def default(self, key: str) -> Any:
+        """The starting value on this backend (``cpu_default`` on the CPU)."""
+        return self._defaults[key]
+
     def items(self):
         return self._vals.items()
 
 
+def section(title: str, *params: Param) -> list[Param]:
+    """List parameters under one heading in the Lab's Controls panel:
+    ``PARAMS = [*section("Senses", Param(...), ...), *section("Speed", ...)]``."""
+    return [replace(p, group=title) for p in params]
+
+
 # ----------------------------------------------------------------- the lab kit
+@dataclass(frozen=True)
+class Preset:
+    """A named set of parameter values, one click away in the Controls panel.
+    Parameters it doesn't mention go back to their defaults, so a preset is always the
+    same starting point."""
+
+    key: str
+    title: str
+    values: dict
+    tip: str = ""      # what to look for with this setting
+
+
 @dataclass(frozen=True)
 class Tool:
     """Something the learner holds in the Lab: shown on the hotbar, keys 1-9.

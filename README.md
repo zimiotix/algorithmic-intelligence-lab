@@ -24,7 +24,7 @@ You need [uv](https://docs.astral.sh/uv/) (it fetches the right Python by itself
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-git clone https://github.com/<you>/algorithmic-intelligence-lab.git
+git clone https://github.com/zimiotix/algorithmic-intelligence-lab.git
 cd algorithmic-intelligence-lab
 uv run ailab
 ./tools/install_desktop.sh          # optional: add it to your app launcher
@@ -34,7 +34,7 @@ uv run ailab
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-git clone https://github.com/<you>/algorithmic-intelligence-lab.git
+git clone https://github.com/zimiotix/algorithmic-intelligence-lab.git
 cd algorithmic-intelligence-lab
 uv run ailab
 powershell -ExecutionPolicy Bypass -File tools\install_shortcut.ps1   # optional: Start menu

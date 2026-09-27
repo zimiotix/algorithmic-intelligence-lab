@@ -1,5 +1,6 @@
 import numpy as np
 import sympy as sp
+import warp as wp
 
 from ailab.core.catalog import discover, load_sim_class
 from ailab.core.sim import InputState, SimContext
@@ -69,3 +70,46 @@ def test_mark_strength_formula():
     rate = q * sp.exp(-t / tau)
     # after one "memory time" the mark is 1/e as strong
     assert sp.simplify(rate.subs(t, tau) / q - sp.exp(-1)) == 0
+
+
+def test_steady_turning_adds_up_to_omega_tau():
+    # W <- W e^(-dt/tau) + omega dt, forever: the geometric series tends to ~ omega tau
+    w, dt, tau = sp.symbols("omega dt tau_w", positive=True)
+    limit = w * dt / (1 - sp.exp(-dt / tau))
+    assert sp.limit(limit, dt, 0) == w * tau
+    # so an ant stuck turning one way (omega = 8, tau_w = 3 -> 24 rad) is soon "lost" at
+    # 1.5 circles (9.4 rad), while a straight walk (no steering) never is
+    assert 8 * 3 > 2 * np.pi * 1.5
+
+
+def _lost_colony(navigators: bool):
+    sim = load_sim_class(INFO)(SimContext("cpu", 4))
+    sim.set_param("navigators", navigators)
+    n = len(sim.pos)
+    spot = next(q for a in np.linspace(0, 2 * np.pi, 16, endpoint=False)
+                if sim.rocks.free(q := np.asarray(sim.nest) + 30 * np.array([np.cos(a),
+                                                                            np.sin(a)]))
+                and 5 < q[0] < 155 and 5 < q[1] < 85)
+    far = np.tile(spot, (n, 1)).astype(np.float32)
+    sim.pos = wp.array(far, dtype=wp.vec2, device=sim.device)
+    sim.wind = wp.array(np.full(n, 100.0, np.float32), dtype=float, device=sim.device)
+    return sim
+
+
+def test_lost_ants_navigate_home_and_lay_no_trail():
+    sim = _lost_colony(True)
+    d0 = np.linalg.norm(sim.pos.numpy() - sim.nest, axis=1).mean()
+    sim.advance(InputState())
+    assert (sim.nav.numpy() > 0).all()               # every circling ant turned navigator
+    assert sim.field.numpy().sum() == 0              # and none of them marked the ground
+    for _ in range(120):                             # two seconds of compass walking
+        sim.advance(InputState())
+    d1 = np.linalg.norm(sim.pos.numpy() - sim.nest, axis=1).mean()
+    assert d1 < d0 - 10
+
+
+def test_navigators_can_be_switched_off():
+    sim = _lost_colony(False)
+    sim.advance(InputState())
+    assert (sim.nav.numpy() == 0).all()
+    assert sim.field.numpy().sum() > 0

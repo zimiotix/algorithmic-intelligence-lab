@@ -15,7 +15,13 @@ uv run tools/new_chapter.py <track> <slug> "Title"
    Keep `status = "draft"` until everything below is done.
 2. **`sim.py`**: `class Sim(Simulation)` with
    - `PARAMS`: every tunable number, with a `symbol` that matches the maths text and a
-     `help` text (shown when the learner hovers the slider: say what raising it does);
+     `help` text (shown when the learner hovers the slider: say what raising it does).
+     No magic constants in kernels: if a number shapes behaviour, it is a `Param`.
+     Group them with `section("Senses", Param(...), ...)`; groups fold in the Controls
+     panel and only the first starts open, so the panel stays calm;
+   - `PRESETS`: named starting points (`Preset(key, title, values, tip)`). Parameters a
+     preset doesn't mention go back to their defaults, so a preset is always repeatable;
+   - `playback`: the speed the Lab starts at, if 1× is too slow to see the idea;
    - `OVERLAYS`: the "see inside" layers (what it senses, what it decides, why);
    - `TOOLS`: what the learner can hold in the Lab (hotbar, keys 1–9). Read the active
      one with `self.tool_of(inp)`; the first tool is the default;

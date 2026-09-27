@@ -24,8 +24,10 @@ from ailab.core import (
     LiveValue,
     Overlay,
     Param,
+    Preset,
     Simulation,
     Tool,
+    section,
 )
 from ailab.core.memory import (
     FieldMemory,
@@ -43,6 +45,7 @@ WIDTH, HEIGHT, CELL = 160.0, 90.0, 0.5
 HOME, FOOD = 0, 1
 NO_CLAIM = 2**31 - 1
 SCENARIOS = ("Open field", "Double bridge", "Maze")
+NAV_COLOR = "#c4b5fd"   # navigator ants: violet
 
 
 @wp.struct
@@ -57,6 +60,14 @@ class Colony:
     nest: wp.vec2
     nest_r: float
     scent_r: float
+    food_cue: float
+    nest_cue: float
+    nav_on: int          # navigator ants enabled
+    nav_loops: float     # full circles of recent turning before an ant counts as lost
+    wind_tau: float      # how fast old turning is forgotten
+    nav_gain: float      # compass strength of a navigator
+    nav_time: float      # how long it navigates before trusting smells again
+    give_up: float       # out this long without reaching food or home: lost
     homing: float
     dt: float
     seed: int
@@ -76,12 +87,12 @@ def smell(P: Colony, g: Grid2D, value: wp.array3d(dtype=float), food: wp.array2d
                 cc = wp.vec2i(c[0] + dx, c[1] + dy)
                 if grid_inside(g, cc):
                     if food[cc[1], cc[0]] > 0:
-                        s += 3.0                               # food itself
+                        s += P.food_cue                        # food itself
     else:
         s = wp.log(1.0 + field_sample3(value, 0, g, q))     # follow the home trail
         dn = wp.length(q - P.nest)
         if dn < P.scent_r:
-            s += 6.0 * (1.0 - dn / P.scent_r)                  # the nest smells too
+            s += P.nest_cue * (1.0 - dn / P.scent_r)           # the nest smells too
     return s
 
 
@@ -90,32 +101,53 @@ def ant_step(P: Colony, g: Grid2D, pos: wp.array(dtype=wp.vec2), ang: wp.array(d
              carry: wp.array(dtype=int), timer: wp.array(dtype=float),
              value: wp.array3d(dtype=float), deposit: wp.array3d(dtype=wp.int32),
              food: wp.array2d(dtype=int), blocked: wp.array2d(dtype=wp.uint8),
-             claims: wp.array2d(dtype=int), delivered: wp.array(dtype=int)):
+             claims: wp.array2d(dtype=int), delivered: wp.array(dtype=int),
+             wind: wp.array(dtype=float), nav: wp.array(dtype=float),
+             rescued: wp.array(dtype=int)):
     i = wp.tid()
     p = pos[i]
     a = ang[i]
     c = carry[i]
     tm = timer[i]
+    w = wind[i]
+    nv = nav[i]
     rng = wp.rand_init(P.seed, i)
+    to_nest = P.nest - p
+    home_err = wp.sin(wp.atan2(to_nest[1], to_nest[0]) - a)
 
-    # 1. sense: three sensors ahead-left, ahead, ahead-right
-    sa = P.sensor_angle
-    sd = P.sensor_dist
-    s_l = smell(P, g, value, food, p + wp.vec2(wp.cos(a + sa), wp.sin(a + sa)) * sd, c)
-    s_f = smell(P, g, value, food, p + wp.vec2(wp.cos(a), wp.sin(a)) * sd, c)
-    s_r = smell(P, g, value, food, p + wp.vec2(wp.cos(a - sa), wp.sin(a - sa)) * sd, c)
-
-    # 2. decide: turn toward the strongest smell, plus a little random wandering
+    # nav > 0: navigating (seconds left); nav < 0: resting from a failed try (can't retrigger)
     turn = float(0.0)
-    if s_f < s_l or s_f < s_r:
-        if s_l > s_r:
-            turn = 1.0
-        elif s_r > s_l:
-            turn = -1.0
-    # path integration: loaded ants also feel the direction home (breaks "ant mills")
-    if c == 1:
-        to_nest = P.nest - p
-        turn = turn + P.homing * wp.sin(wp.atan2(to_nest[1], to_nest[0]) - a)
+    if nv > 0.0:
+        # a navigator ignores smells and walks home by its inner compass
+        turn = P.nav_gain * home_err
+        nv = nv - P.dt
+        if nv <= 0.0:
+            nv = -P.nav_time                      # didn't make it home: trust smells a while
+            w = 0.0
+    else:
+        nv = wp.min(nv + P.dt, 0.0)
+        # 1. sense: three sensors ahead-left, ahead, ahead-right
+        sa = P.sensor_angle
+        sd = P.sensor_dist
+        s_l = smell(P, g, value, food, p + wp.vec2(wp.cos(a + sa), wp.sin(a + sa)) * sd, c)
+        s_f = smell(P, g, value, food, p + wp.vec2(wp.cos(a), wp.sin(a)) * sd, c)
+        s_r = smell(P, g, value, food, p + wp.vec2(wp.cos(a - sa), wp.sin(a - sa)) * sd, c)
+
+        # 2. decide: turn toward the strongest smell, plus a little random wandering
+        if s_f < s_l or s_f < s_r:
+            if s_l > s_r:
+                turn = 1.0
+            elif s_r > s_l:
+                turn = -1.0
+        # path integration: loaded ants also feel the direction home (breaks "ant mills")
+        if c == 1:
+            turn = turn + P.homing * home_err
+        # going in circles? recent steering adds up; old turning fades
+        w = w * wp.exp(-P.dt / P.wind_tau) + turn * P.turn_rate * P.dt
+        lost = wp.abs(w) > 6.28318531 * P.nav_loops or tm > P.give_up
+        if P.nav_on == 1 and nv == 0.0 and lost:
+            nv = P.nav_time                       # lost: become a navigator
+            w = 0.0
     a = a + turn * P.turn_rate * P.dt + (wp.randf(rng) - 0.5) * 2.0 * P.wander * wp.sqrt(P.dt)
 
     # 3. act: move, or turn around at walls
@@ -129,10 +161,15 @@ def ant_step(P: Colony, g: Grid2D, pos: wp.array(dtype=wp.vec2), ang: wp.array(d
     ch = int(0)
     if c == 1:
         ch = 1
-    field_deposit(deposit, ch, g, p, P.deposit * wp.exp(-tm / P.trail_tau) * P.dt)
+    if nv <= 0.0:                                 # navigators don't feed the loop
+        field_deposit(deposit, ch, g, p, P.deposit * wp.exp(-tm / P.trail_tau) * P.dt)
     tm = tm + P.dt
 
     if wp.length(p - P.nest) < P.nest_r:
+        if nv > 0.0:
+            wp.atomic_add(rescued, 0, 1)
+        nv = 0.0
+        w = 0.0
         if c == 1:
             c = 0
             wp.atomic_add(delivered, 0, 1)
@@ -147,6 +184,8 @@ def ant_step(P: Colony, g: Grid2D, pos: wp.array(dtype=wp.vec2), ang: wp.array(d
     ang[i] = a
     carry[i] = c
     timer[i] = tm
+    wind[i] = w
+    nav[i] = nv
 
 
 @wp.kernel
@@ -241,34 +280,92 @@ class Sim(Simulation):
     world = (0.0, 0.0, WIDTH, HEIGHT)
     background = "soil"
     PARAMS = [
-        Param("scenario", "Scenario", "Open field", choices=SCENARIOS, restart=True,
-              help="Double bridge is the classic experiment: two routes, one shorter."),
-        Param("n_ants", "Ants", 1500, 50, 20000, 50,
-              "Colony size. More ants find food sooner and keep trails fresher.", "N",
-              restart=True, cpu_default=600),
-        Param("speed", "Walking speed", 10.0, 2.0, 25.0, 0.5,
-              "How fast every ant walks.", "v", "u/s"),
-        Param("sensor_angle", "Sensor angle", 35.0, 5.0, 90.0, 1.0,
-              "Angle between the front sensor and the side sensors.", "\\theta_s", "deg"),
-        Param("sensor_dist", "Sensor distance", 2.5, 0.5, 8.0, 0.1,
-              "How far ahead the sensors reach.", "d_s"),
-        Param("turn_rate", "Turn rate", 8.0, 0.5, 20.0, 0.5,
-              "How sharply an ant turns toward a stronger smell. Low: it overshoots trails.",
-              "\\omega", "rad/s"),
-        Param("wander", "Wander", 1.5, 0.0, 6.0, 0.1,
-              "Random turning. Too little: no exploring. Too much: no trail following.",
-              "\\sigma"),
-        Param("homing", "Path integration", 0.5, 0.0, 2.0, 0.05,
-              "Loaded ants also steer toward home by dead reckoning. 0 = pheromone only "
-              "(try it: ants can get stuck circling in an 'ant mill').", "h"),
-        Param("deposit", "Pheromone per second", 1.0, 0.0, 5.0, 0.05,
-              "How much scent each ant lays. At 0 the colony has no shared memory.", "q"),
-        Param("trail_tau", "Ant memory", 20.0, 1.0, 120.0, 1.0,
-              "Marks weaken with time since the ant left home or found food.", "\\tau_a", "s"),
-        Param("evap_tau", "Evaporation time", 40.0, 2.0, 300.0, 1.0,
-              "How long pheromone lasts in the world.", "\\tau_e", "s"),
-        Param("diffusion", "Diffusion", 1.0, 0.0, 12.0, 0.1,
-              "How fast pheromone spreads to neighbouring cells.", "D", "cells^2/s"),
+        *section(
+            "Colony",
+            Param("scenario", "Scenario", "Open field", choices=SCENARIOS, restart=True,
+                  help="Double bridge is the classic experiment: two routes, one shorter."),
+            Param("n_ants", "Ants", 1500, 50, 20000, 50,
+                  "Colony size. More ants find food sooner and keep trails fresher.", "N",
+                  restart=True, cpu_default=600),
+            Param("speed", "Walking speed", 10.0, 2.0, 25.0, 0.5,
+                  "How fast every ant walks.", "v", "u/s"),
+            Param("wander", "Wander", 1.5, 0.0, 6.0, 0.1,
+                  "Random turning. Too little: no exploring. Too much: no trail following.",
+                  "\\sigma"),
+        ),
+        *section(
+            "Sensing",
+            Param("sensor_angle", "Sensor angle", 35.0, 5.0, 90.0, 1.0,
+                  "Angle between the front sensor and the side sensors.", "\\theta_s", "deg"),
+            Param("sensor_dist", "Sensor distance", 2.5, 0.5, 8.0, 0.1,
+                  "How far ahead the sensors reach.", "d_s"),
+            Param("turn_rate", "Turn rate", 8.0, 0.5, 20.0, 0.5,
+                  "How sharply an ant turns toward a stronger smell. Low: it overshoots "
+                  "trails.", "\\omega", "rad/s"),
+            Param("food_cue", "Food smell", 3.0, 0.0, 10.0, 0.1,
+                  "How strongly a sensor touching food pulls a searching ant. At 0 ants "
+                  "find food only by bumping into it."),
+        ),
+        *section(
+            "Going home",
+            Param("homing", "Path integration", 0.5, 0.0, 2.0, 0.05,
+                  "Loaded ants also steer toward home by dead reckoning. 0 = pheromone only "
+                  "(try it: ants can get stuck circling in an 'ant mill').", "h"),
+            Param("nest_cue", "Nest smell", 6.0, 0.0, 15.0, 0.1,
+                  "How strongly the nest's own smell pulls loaded ants when they are close."),
+            Param("scent_r", "Nest smell range", 10.0, 2.0, 40.0, 0.5,
+                  "How far from the nest its smell reaches."),
+        ),
+        *section(
+            "Navigator ants",
+            Param("navigators", "Navigator ants", True,
+                  help="An ant that notices it is lost (circling, or out far too long) stops "
+                       "following smells and walks home by its inner compass (violet)."),
+            Param("nav_loops", "Lost after circling", 1.5, 0.5, 5.0, 0.25,
+                  "How many full circles of recent turning make an ant decide it is lost.",
+                  "n_{lost}", "turns"),
+            Param("give_up", "Lost after searching", 60.0, 5.0, 300.0, 5.0,
+                  "An ant out this long without reaching food or home gives up and heads "
+                  "home, as real foragers do.", "T_{lost}", "s"),
+            Param("wind_tau", "Turning memory", 8.0, 0.5, 20.0, 0.5,
+                  "How long an ant remembers its own turning. Long: slow, wide loops count "
+                  "too.", "\\tau_w", "s"),
+            Param("nav_gain", "Compass strength", 3.0, 0.5, 10.0, 0.1,
+                  "How hard a navigator steers toward home.", "g_n"),
+            Param("nav_time", "Navigate for", 10.0, 1.0, 60.0, 1.0,
+                  "How long a navigator ignores smells. If it isn't home by then (a wall in "
+                  "the way), it follows smells again for as long before it can retry.",
+                  "T_n", "s"),
+        ),
+        *section(
+            "Pheromone",
+            Param("deposit", "Pheromone per second", 1.0, 0.0, 5.0, 0.05,
+                  "How much scent each ant lays. At 0 the colony has no shared memory.", "q"),
+            Param("trail_tau", "Ant memory", 20.0, 1.0, 120.0, 1.0,
+                  "Marks weaken with time since the ant left home or found food.",
+                  "\\tau_a", "s"),
+            Param("evap_tau", "Evaporation time", 40.0, 2.0, 300.0, 1.0,
+                  "How long pheromone lasts in the world.", "\\tau_e", "s"),
+            Param("diffusion", "Diffusion", 1.0, 0.0, 12.0, 0.1,
+                  "How fast pheromone spreads to neighbouring cells.", "D", "cells^2/s"),
+        ),
+    ]
+    PRESETS = [
+        Preset("default", "Default", {}, "The standard colony in an open field."),
+        Preset("bridge", "Double bridge", {"scenario": "Double bridge"},
+               "Two routes to food, one shorter. Watch the colony pick one."),
+        Preset("maze", "Maze", {"scenario": "Maze"}, "Food hidden behind walls."),
+        Preset("forget", "Fast fading", {"evap_tau": 6.0},
+               "Trails vanish quickly: the colony struggles to settle on a route."),
+        Preset("stubborn", "Long memory", {"evap_tau": 300.0},
+               "Trails last: the colony locks onto the first route it finds, even a bad one."),
+        Preset("explore", "Explorers", {"wander": 4.5},
+               "Restless ants find new food fast but lose trails."),
+        Preset("mill", "Ant mill", {"homing": 0.0, "navigators": False},
+               "No sense of direction: loaded ants can circle their own trail forever."),
+        Preset("rescue", "Mill rescue", {"homing": 0.0},
+               "Mills start to form, but ants that notice they are circling turn navigator "
+               "(violet) and walk home."),
     ]
     OVERLAYS = [
         Overlay("home", "Home trail", True, "Laid by searching ants: points back to the nest."),
@@ -307,9 +404,14 @@ class Sim(Simulation):
                    "and the colony switches over in a positive feedback loop.",
                    check="exp_newfood"),
         Experiment("mill", "Make an ant mill",
-                   "In Open field, set Path integration (h) to 0 and watch loaded ants.",
+                   "Pick the Ant mill preset: Path integration (h) at 0 and no navigators.",
                    "Following only each other's trail, ants can circle forever. Army ants "
                    "really do this. Real ants also use a sense of direction home, as h does."),
+        Experiment("rescue", "Break the loop",
+                   "Pick the Mill rescue preset and watch for violet navigator ants.",
+                   "An ant can't see a mill from inside it, but it can notice that it keeps "
+                   "turning the same way. That signal, which the loop can't fake, tells it to "
+                   "stop trusting the trail and use its compass.", check="exp_rescue"),
         Experiment("amnesia", "A colony without memory",
                    "Set Evaporation time (τ_e) to 2 s and compare deliveries.",
                    "When marks vanish faster than a round trip, no trail can form. "
@@ -326,9 +428,13 @@ class Sim(Simulation):
                "Δc: pheromone laid this step · q: pheromone per second · t_a: time since it "
                "left the nest or found food · τ_a: ant memory · Δt: one step (1/60 s)"),
         LiveEq("home", "The pull toward home",
-               r"\Delta\theta = h\,\sin(\theta_{nest} - \theta)\,\Delta t",
-               "Δθ: extra turn this step · h: path-integration strength · "
+               r"\Delta\theta = \omega\,h\,\sin(\theta_{nest} - \theta)\,\Delta t",
+               "Δθ: extra turn this step · ω: turn rate · h: path-integration strength · "
                "θ_nest: direction of the nest · θ: its heading"),
+        LiveEq("lost", "Am I lost?", r"|W| > 2\pi\, n_{lost} \;\vee\; t_a > T_{lost}",
+               "W: how far it has turned lately, in radians (older turning fades over τ_w) · "
+               "2π: one full circle · n_lost: circles before it counts as lost · ∨: or · "
+               "t_a: time since it left home or found food · T_lost: when it gives up"),
     ]
 
     def reset(self, seed: int) -> None:
@@ -357,6 +463,9 @@ class Sim(Simulation):
         self.carry = wp.zeros(n, dtype=int, device=dev)
         self.timer = wp.zeros(n, dtype=float, device=dev)
         self.delivered = wp.zeros(1, dtype=int, device=dev)
+        self.wind = wp.zeros(n, dtype=float, device=dev)
+        self.nav = wp.zeros(n, dtype=float, device=dev)
+        self.rescued = wp.zeros(1, dtype=int, device=dev)
         self.leg_phase = rng.uniform(0, 2 * np.pi, n).astype(np.float32)
         self.seed_jitter = rng.uniform(-0.3, 0.3, (ny, nx, 2)).astype(np.float32)
         self._rock_img = None
@@ -379,7 +488,12 @@ class Sim(Simulation):
         c.sensor_dist, c.turn_rate, c.wander = p.sensor_dist, p.turn_rate, p.wander
         c.deposit, c.trail_tau = p.deposit, p.trail_tau
         c.nest = wp.vec2(*self.nest)
-        c.nest_r, c.scent_r, c.homing = 3.0, 10.0, p.homing
+        c.nest_r, c.scent_r, c.homing = 3.0, p.scent_r, p.homing
+        c.food_cue, c.nest_cue = p.food_cue, p.nest_cue
+        c.nav_on = 1 if p.navigators else 0
+        c.nav_loops, c.wind_tau = p.nav_loops, p.wind_tau
+        c.nav_gain, c.nav_time = p.nav_gain, p.nav_time
+        c.give_up = p.give_up
         c.dt = self.dt
         c.seed = int((self.seed * 1_000_003 + self.steps) % (2**31 - 1))
         return c
@@ -422,7 +536,7 @@ class Sim(Simulation):
         wp.launch(ant_step, dim=len(self.pos),
                   inputs=[self._colony(), g, self.pos, self.ang, self.carry, self.timer,
                           f.value, f.deposit, self.food, self.rocks.blocked, self.claims,
-                          self.delivered], device=dev)
+                          self.delivered, self.wind, self.nav, self.rescued], device=dev)
         wp.launch(ant_pickup, dim=len(self.pos),
                   inputs=[g, self.pos, self.ang, self.carry, self.timer, self.food,
                           self.claims], device=dev)
@@ -434,12 +548,15 @@ class Sim(Simulation):
             self._host = dict(pos=self.pos.numpy(), ang=self.ang.numpy(),
                               carry=self.carry.numpy(), timer=self.timer.numpy(),
                               field=self.field.numpy(), food=self.food.numpy(),
-                              delivered=int(self.delivered.numpy()[0]))
+                              delivered=int(self.delivered.numpy()[0]),
+                              wind=self.wind.numpy(), nav=self.nav.numpy(),
+                              rescued=int(self.rescued.numpy()[0]))
         return self._host
 
     def state_arrays(self):
         h = self._fetch()
-        return [h["pos"], h["ang"], h["carry"], h["field"], h["food"], self.rocks.mask]
+        return [h["pos"], h["ang"], h["carry"], h["field"], h["food"], h["nav"],
+                self.rocks.mask]
 
     # ------------------------------------------------------------------ draw
     def draw(self, s) -> None:
@@ -481,6 +598,10 @@ class Sim(Simulation):
             if self.show.memory:
                 t = np.clip(h["timer"] / self.p.trail_tau, 0, 1)
                 col = pal.lerp_colors("#fde68a", "#6b21a8", t)
+            navs = h["nav"] > 0
+            if navs.any():
+                col = col.copy()
+                col[navs] = pal.rgba(NAV_COLOR, 1.0, 1.5)
             s.sprites("ant", pos, ang, (1.5, 0.8), col, self.leg_phase)
             idx = np.nonzero(carry == 1)[0]
             if len(idx):
@@ -505,10 +626,10 @@ class Sim(Simulation):
             x0, x1 = max(ix - 1, 0), min(ix + 2, field.shape[2])
             v = np.log1p(field[ch, y0:y1, x0:x1].sum())      # same rule as the kernel
             if c == 0:
-                v += 3.0 * (food[y0:y1, x0:x1] > 0).sum()
+                v += P.food_cue * (food[y0:y1, x0:x1] > 0).sum()
             else:
                 dn = np.hypot(*(q - self.nest))
-                v += 6.0 * max(0.0, 1 - dn / 10.0)
+                v += P.nest_cue * max(0.0, 1 - dn / P.scent_r)
             vals.append(v)
         return pts, np.array(vals)
 
@@ -530,6 +651,8 @@ class Sim(Simulation):
             HudItem("ants", f"{len(carry):,}"),
             HudItem("carrying food", f"{100 * carry.mean():.0f}%"),
             HudItem("delivered", f"{h['delivered']:,}", accent=True),
+            HudItem("navigating home", f"{int((h['nav'] > 0).sum()):,} · "
+                                       f"{h['rescued']:,} got home"),
             HudItem("food left", f"{left:,} / {self.food_total:,}"),
             HudItem("time", f"{self.t:.0f} s"),
         ]
@@ -556,16 +679,35 @@ class Sim(Simulation):
                                 f"{fmt(P.trail_tau, 0)}) = {fmt(rate)} per s", None,
                                 "fresh from the nest or food: strong marks" if rate > 0.5 * P.deposit
                                 else "long trip so far: faint marks (long routes lose)")
-        if c:
-            to = self.nest - p
-            err = float(np.arctan2(np.sin(np.arctan2(to[1], to[0]) - a),
-                                   np.cos(np.arctan2(to[1], to[0]) - a)))
+        to = self.nest - p
+        err = float(np.arctan2(np.sin(np.arctan2(to[1], to[0]) - a),
+                               np.cos(np.arctan2(to[1], to[0]) - a)))
+        nav = float(h["nav"][f])
+        if nav > 0:
+            out["home"] = LiveValue(f"nest is {np.degrees(err):+.0f}° off → navigator turns "
+                                    f"{fmt(P.turn_rate * P.nav_gain * np.sin(err))} rad/s",
+                                    None, "navigating: compass only, smells ignored")
+        elif c:
             out["home"] = LiveValue(f"nest is {np.degrees(err):+.0f}° off → turn "
-                                    f"{fmt(P.homing * np.sin(err))} rad/s", None,
+                                    f"{fmt(P.turn_rate * P.homing * np.sin(err))} rad/s", None,
                                     "path integration: it knows roughly where home is")
         else:
             out["home"] = LiveValue("not carrying food: no pull home", None,
                                     "searching ants go wherever the smell leads")
+        wv, limit = float(h["wind"][f]), 2 * np.pi * P.nav_loops
+        text = (f"|W| = {fmt(abs(wv), 1)} of {fmt(limit, 1)} rad · t_a = {ta:.0f} of "
+                f"{P.give_up:.0f} s")
+        if nav > 0:
+            out["lost"] = LiveValue(f"was lost → navigating home, {nav:.0f} s left", True,
+                                    "it noticed it was lost and switched to its compass")
+        elif not P.navigators:
+            out["lost"] = LiveValue(text, None, "navigators are off: it follows smells "
+                                                "wherever they lead, even in circles")
+        elif nav < 0:
+            out["lost"] = LiveValue(text, False, "its compass run failed (a wall?): trusting "
+                                                 f"smells for {-nav:.0f} s before it retries")
+        else:
+            out["lost"] = LiveValue(text, False, "on track: it trusts the smells")
         return out
 
     # ------------------------------------------------------------ experiments
@@ -580,6 +722,9 @@ class Sim(Simulation):
         short = int((mid & (pos[:, 1] > 52)).sum())
         long_ = int((mid & (pos[:, 1] < 30)).sum())
         return short + long_ >= 40 and short >= 3 * long_
+
+    def exp_rescue(self) -> bool:
+        return self.p.navigators and self.p.homing < 0.05 and self._fetch()["rescued"] >= 25
 
     def exp_cut(self) -> bool:
         return self.cut_at is not None and self._fetch()["delivered"] >= self.cut_at + 60

@@ -83,7 +83,7 @@ Fear $f_i$ is a number from 0 (calm) to 1 (terrified). It fades with the time co
 $\tau_f$ (after $\tau_f$ seconds only about a third is left), is copied from the sensed
 neighbours $N_i$ with the contagion factor $c$, and jumps to the threat level $\theta$
 when the predator is sensed. The predator moves with velocity $\mathbf{v}_p$, and
-$v_{attack} = 40$ is the speed of a real strike:
+$v_{attack}$ (40 by default) is the speed of a real strike:
 
 $$
 f_i \leftarrow \max\!\Big( f_i\, e^{-\Delta t/\tau_f},\;\; c \max_{j \in N_i} f_j,\;\; \theta \Big),
@@ -117,10 +117,10 @@ is the side of the predator's path the fish is already on.
 
 ## Rock: pressure and a look ahead
 
-Every rock cell $k$ within $r_{rock} = 3$ of the fish pushes it away, gently far off and
+Every rock cell $k$ within $r_{rock}$ (3 by default) of the fish pushes it away, gently far off and
 strongly up close. On top of that the fish looks ahead along its heading for a distance
-$L = 7$. If the look hits rock after a free distance $\ell < L$, it compares two more
-looks turned $\pm 0.6$ rad and turns toward the freer side:
+$L$ (7 by default). If the look hits rock after a free distance $\ell < L$, it compares two more
+looks turned left and right by the side-look angle (0.6 rad by default) and turns toward the freer side:
 
 $$
 \mathbf{F}^{rock}_i = w_r \sum_{k:\,d_{ik} < r_{rock}} \hat{\mathbf{u}}_{ki}\Big(1 - \frac{d_{ik}}{r_{rock}}\Big)^2
@@ -133,7 +133,7 @@ a step that would end inside it slides along it instead.
 
 ## Hunger against fear
 
-Hunger $h_i \in [0, 1]$ grows steadily and drops by $b = 0.25$ with each bite:
+Hunger $h_i \in [0, 1]$ grows steadily and drops by the bite size $b$ (0.25 by default) with each bite:
 
 $$
 h_i \leftarrow \min\!\Big(h_i + \frac{\Delta t}{\tau_h},\; 1\Big)

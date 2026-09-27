@@ -101,7 +101,8 @@ v^* = \min\!\Big(v_{max},\; \frac{v_{max}}{1 + k_\delta |\delta|},\; \sqrt{2 a_b
 $$
 
 and the throttle is a proportional controller $a = \operatorname{clip}(k_p (v^* - v), -a_b, a_{max})$.
-The steering itself is rate-limited: $|\dot\delta| \le \dot\delta_{max}$.
+The steering itself is rate-limited, $|\dot\delta| \le \dot\delta_{max}$, and the wheels
+only turn so far, $|\delta| \le \delta_{max}$.
 
 ## The kinematic bicycle model
 

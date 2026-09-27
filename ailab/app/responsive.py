@@ -6,12 +6,37 @@
   ``grid-template-columns: repeat(auto-fill, minmax(min_col, 1fr))``.
 * ``Drawer``: a panel that slides over its host from the left or right edge, with a
   dimmed scrim behind it (click the scrim or press Esc to close), like a phone nav drawer.
+* ``FlowLayout``: items side by side at their natural width, wrapping onto new lines
+  (CSS ``flex-wrap: wrap``), for tags and chips.
+* ``Fold``: a section with a clickable header that opens and closes, like ``<details>``;
+  it remembers its state between runs.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPropertyAnimation, Qt, Signal
-from PySide6.QtWidgets import QFrame, QGridLayout, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QPoint,
+    QPropertyAnimation,
+    QRect,
+    QSize,
+    Qt,
+    Signal,
+)
+from PySide6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLayout,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ailab.core import settings
 
 COMPACT, MEDIUM, WIDE = "compact", "medium", "wide"
 
@@ -58,6 +83,62 @@ class FlowGrid(QWidget):
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
         self._relayout()
+
+
+class FlowLayout(QLayout):
+    """Children at their preferred width, left to right, wrapping when the row is full."""
+
+    def __init__(self, parent=None, spacing: int = 6):
+        super().__init__(parent)
+        self._items = []
+        self._gap = spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item) -> None:
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return self._arrange(QRect(0, 0, width, 0), move=False)
+
+    def setGeometry(self, rect) -> None:
+        super().setGeometry(rect)
+        self._arrange(rect, move=True)
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:
+        size = QSize()
+        for it in self._items:
+            size = size.expandedTo(it.minimumSize())
+        return size
+
+    def _arrange(self, rect, move: bool) -> int:
+        x, y, line = rect.x(), rect.y(), 0
+        for it in self._items:
+            hint = it.sizeHint()
+            if x > rect.x() and x + hint.width() > rect.right() + 1:
+                x, y, line = rect.x(), y + line + self._gap, 0
+            if move:
+                it.setGeometry(QRect(QPoint(x, y), hint))
+            x += hint.width() + self._gap
+            line = max(line, hint.height())
+        return y + line - rect.y()
 
 
 class _Scrim(QWidget):
@@ -183,3 +264,67 @@ class FitWidthScroll(QScrollArea):
         super().resizeEvent(e)
         if self.widget() is not None:
             self.widget().setFixedWidth(self.viewport().width())
+
+
+class Fold(QWidget):
+    """A section that opens and closes from its header (like HTML ``<details>``).
+
+    ``key`` remembers the state in settings (``folds``); ``style`` is "section" for a
+    panel's top-level headings or "group" for smaller headings inside one. Put content
+    in ``body`` (a QVBoxLayout); ``set_badge`` shows a short note at the right end of the
+    header, visible even when closed."""
+
+    toggled = Signal(bool)
+
+    def __init__(self, title: str, key: str = "", opened: bool = True, style: str = "section",
+                 tip: str = "", parent=None):
+        super().__init__(parent)
+        self.key, self.title = key, title
+        if key:
+            opened = bool(settings.load().get("folds", {}).get(key, opened))
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6 if style == "section" else 8)
+        self.head = QPushButton()
+        self.head.setObjectName("fold")
+        self.head.setProperty("fold", style)
+        self.head.setCursor(Qt.PointingHandCursor)
+        self.head.setFocusPolicy(Qt.NoFocus)    # keep Space/keys for the simulation
+        self.head.setCheckable(True)
+        self.head.setToolTip(tip or "Click to open or close")
+        hl = QHBoxLayout(self.head)
+        hl.setContentsMargins(0, 0, 6, 0)
+        hl.setAlignment(Qt.AlignVCenter)
+        hl.addStretch(1)
+        self.badge = QLabel()
+        self.badge.setProperty("role", "faint")
+        self.badge.setAttribute(Qt.WA_TransparentForMouseEvents)
+        hl.addWidget(self.badge)
+        lay.addWidget(self.head)
+        self.content = QWidget()
+        self.body = QVBoxLayout(self.content)
+        self.body.setContentsMargins(0, 2, 0, 4)
+        self.body.setSpacing(10)
+        lay.addWidget(self.content)
+        self.head.toggled.connect(self._toggled)
+        self.head.setChecked(opened)
+        self._toggled(opened, save=False)
+
+    @property
+    def opened(self) -> bool:
+        return self.head.isChecked()
+
+    def set_open(self, on: bool) -> None:
+        self.head.setChecked(on)
+
+    def set_badge(self, text: str) -> None:
+        self.badge.setText(text)
+
+    def _toggled(self, on: bool, save: bool = True) -> None:
+        self.head.setText(("▾  " if on else "▸  ") + self.title)
+        self.content.setVisible(on)
+        if save and self.key:
+            folds = dict(settings.load().get("folds", {}))
+            folds[self.key] = on
+            settings.save({"folds": folds})
+        self.toggled.emit(on)

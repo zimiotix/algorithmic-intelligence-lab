@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from ..core.params import Param
 from . import theme
+from .responsive import Fold
 
 GREEK = {"tau": "τ", "phi": "φ", "Phi": "Φ", "theta": "θ", "omega": "ω", "sigma": "σ",
          "delta": "δ", "alpha": "α", "dot": ""}
@@ -200,19 +201,47 @@ def param_tooltip(p: Param) -> str:
 
 
 class ParamPanel(QWidget):
-    """Sliders / toggles / dropdowns generated from a simulation's PARAMS."""
+    """Sliders / toggles / dropdowns generated from a simulation's PARAMS.
+
+    Parameters with a ``group`` are listed under folding headings (only the first starts
+    open, so the panel stays calm); ``fold_key`` makes each group remember its state."""
 
     changed = Signal(str, object)
 
-    def __init__(self, params: list[Param], values, parent=None):
+    def __init__(self, params: list[Param], values, fold_key: str = "", parent=None):
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(12)
         self._widgets = {}
+        self._setters = {}
+        self.folds = []
+        groups: dict[str, list[Param]] = {}
         for p in params:
-            lay.addWidget(self._row(p, values.get(p.key)))
+            groups.setdefault(p.group, []).append(p)
+        if list(groups) == [""]:
+            for p in params:
+                lay.addWidget(self._row(p, values.get(p.key)))
+        else:
+            for i, (name, ps) in enumerate(groups.items()):
+                f = Fold(name or "Other", f"{fold_key}:{name}" if fold_key else "",
+                         opened=i == 0, style="group",
+                         tip=", ".join(p.label for p in ps))
+                f.set_badge(str(len(ps)))
+                f.body.setSpacing(12)
+                for p in ps:
+                    f.body.addWidget(self._row(p, values.get(p.key)))
+                lay.addWidget(f)
+                self.folds.append(f)
         lay.addStretch(1)
+
+    def refresh(self, values) -> None:
+        """Show new values (after a preset) without emitting ``changed``."""
+        for key, setter in self._setters.items():
+            w = self._widgets[key]
+            w.blockSignals(True)
+            setter(values.get(key))
+            w.blockSignals(False)
 
     def _row(self, p: Param, value) -> QWidget:
         w = QWidget()
@@ -236,6 +265,7 @@ class ParamPanel(QWidget):
             cb.setToolTip(tip)
             g.addWidget(cb, 0, 1, Qt.AlignRight)
             self._widgets[p.key] = cb
+            self._setters[p.key] = lambda v, cb=cb: cb.setChecked(bool(v))
         elif p.kind == "choice":
             combo = QComboBox()
             combo.addItems(list(p.choices))
@@ -244,6 +274,7 @@ class ParamPanel(QWidget):
             combo.setToolTip(tip)
             g.addWidget(combo, 1, 0, 1, 2)
             self._widgets[p.key] = combo
+            self._setters[p.key] = lambda v, c=combo: c.setCurrentText(str(v))
         else:
             unit = f" {p.unit}" if p.unit else ""
             val = QLabel()
@@ -259,8 +290,11 @@ class ParamPanel(QWidget):
             def fmt(v, p=p, unit=unit):
                 return (f"{int(v):,}" if p.kind == "int" else f"{v:.3g}") + unit
 
-            s.setValue(int(round((float(value) - p.lo) / step)))
-            val.setText(fmt(value))
+            def show(v, s=s, val=val, p=p, step=step, f=fmt):
+                s.setValue(int(round((float(v) - p.lo) / step)))
+                val.setText(f(v))
+
+            show(value)
             s.valueChanged.connect(lambda i, val=val, f=fmt, tv=to_val: val.setText(f(tv(i))))
             if p.restart:
                 s.sliderReleased.connect(lambda s=s, k=p.key, tv=to_val:
@@ -272,4 +306,5 @@ class ParamPanel(QWidget):
             s.setToolTip(tip)
             g.addWidget(s, 1, 0, 1, 2)
             self._widgets[p.key] = s
+            self._setters[p.key] = show
         return w

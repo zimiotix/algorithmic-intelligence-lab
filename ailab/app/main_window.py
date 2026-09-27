@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import sys
 import traceback
 
@@ -37,9 +38,17 @@ from ..core.sim import SimContext
 from ..core.system import SystemInfo
 from ..text.markdown import split_sections, symbol_table
 from . import theme
-from .lab import GuidePanel, Hotbar, LiveMathPanel, Toast
+from .lab import GuidePanel, Hotbar, Toast
 from .markdown_view import MarkdownView
-from .responsive import COMPACT, Drawer, FitWidthScroll, FlowGrid, breakpoint
+from .responsive import (
+    COMPACT,
+    Drawer,
+    FitWidthScroll,
+    FlowGrid,
+    FlowLayout,
+    Fold,
+    breakpoint,
+)
 from .viewport import Viewport
 from .widgets import ChapterCard, Logo, ParamPanel, StatCard, chip, dot_pixmap
 
@@ -438,15 +447,13 @@ class ChapterPage(QWidget):
         self.split.addWidget(self.guide)
         self.split.addWidget(self.view_host)
         self.split.addWidget(self.inspector)
-        self.split.setCollapsible(1, False)
+        for i in range(3):              # side panels shrink to their minimum, never to 0
+            self.split.setCollapsible(i, False)
         self.split.setStretchFactor(1, 1)
-        sizes = settings.load().get("lab_split")
-        self.split.setSizes(sizes if isinstance(sizes, list) and len(sizes) == 3
-                            else [290, 1000, 340])
+        self._restore_split()
         self._split_save = QTimer(self)
         self._split_save.setSingleShot(True)
-        self._split_save.timeout.connect(
-            lambda: settings.save({"lab_split": self.split.sizes()}))
+        self._split_save.timeout.connect(self._save_split)
         self.split.splitterMoved.connect(lambda *_: self._split_save.start(600))
         ll.addWidget(self.split, 1)
         self.tabs.addTab(lab, "Lab")
@@ -459,7 +466,9 @@ class ChapterPage(QWidget):
         self.focus_mode = False
         self.tool_key = ""
         self.done: set[str] = set()
-        self.live: LiveMathPanel | None = None
+        self._live_ok = True
+        self.params_panel = None
+        self._preset_btns: list = []
 
         # --- deep dive
         dd = QWidget()
@@ -523,7 +532,8 @@ class ChapterPage(QWidget):
         tl.addWidget(dice)
         tl.addSpacing(10)
         self.speed_group = QButtonGroup(self)
-        for i, s in enumerate((0.25, 0.5, 1.0, 2.0, 4.0)):
+        self._speeds = (0.25, 0.5, 1.0, 2.0, 4.0)
+        for i, s in enumerate(self._speeds):
             b = QPushButton(f"{s:g}×")
             b.setCheckable(True)
             b.setProperty("role", "seg")
@@ -541,7 +551,7 @@ class ChapterPage(QWidget):
         self._tb_speed = list(self.speed_group.buttons())
         self._tb_view, self._tb_seed = view, [sl, self.seed, dice]
         self.guide_btn = QPushButton("◧ Guide")
-        self.insp_btn = QPushButton("Inspector ◨")
+        self.insp_btn = QPushButton("Controls ◨")
         focus = QPushButton("⛶ Focus")
         self._focus_btn = focus
         focus.setToolTip("Only the simulation (Tab). Esc or Tab to come back.")
@@ -593,7 +603,7 @@ class ChapterPage(QWidget):
         for x in self._tb_speed + [self._tb_view] + self._tb_seed:
             x.show()
         self.guide_btn.setText("◧ Guide")
-        self.insp_btn.setText("Inspector ◨")
+        self.insp_btn.setText("Controls ◨")
         self._focus_btn.setText("⛶ Focus")
         lay = bar.layout()
         for step in steps:
@@ -618,12 +628,34 @@ class ChapterPage(QWidget):
             self.split.insertWidget(2, i)
             g.show()
             i.show()
-            sizes = settings.load().get("lab_split")
-            if isinstance(sizes, list) and len(sizes) == 3:
-                self.split.setSizes(sizes)
+            self._restore_split()
             for b in (self.guide_btn, self.insp_btn):
                 self._sync_btn(b, True)
         self._place_overlays()
+
+    SPLIT_DEFAULT = (290, 1000, 340)
+
+    def _saved_split(self) -> list[int]:
+        """Saved panel widths, or the defaults if they are missing or unusable (a panel
+        saved at 0 px would otherwise stay invisible forever)."""
+        sizes = settings.load().get("lab_split")
+        ok = (isinstance(sizes, list) and len(sizes) == 3
+              and all(isinstance(x, int) for x in sizes)
+              and sizes[0] >= self.guide.minimumWidth()
+              and sizes[2] >= self.inspector.minimumWidth() and sizes[1] >= 200)
+        return list(sizes) if ok else list(self.SPLIT_DEFAULT)
+
+    def _restore_split(self) -> None:
+        self.split.setSizes(self._saved_split())
+
+    def _save_split(self) -> None:
+        """Remember the widths of the panels that are showing; a hidden panel reports 0,
+        so it keeps its previously saved width."""
+        sizes, old = self.split.sizes(), self._saved_split()
+        for i, w in enumerate((self.guide, self.view_host, self.inspector)):
+            if not w.isVisible() or sizes[i] <= 0:
+                sizes[i] = old[i]
+        settings.save({"lab_split": sizes})
 
     def _show_pane(self, which: str, on: bool) -> None:
         pane = self.guide if which == "guide" else self.inspector
@@ -636,6 +668,13 @@ class ChapterPage(QWidget):
                 drawer.close_drawer()
         else:
             pane.setVisible(on)
+            i = 0 if which == "guide" else 2
+            sizes = self.split.sizes()
+            if on and sizes[i] < pane.minimumWidth():
+                want = self._saved_split()[i]
+                sizes[1] = max(200, sizes[1] - want)
+                sizes[i] = want
+                self.split.setSizes(sizes)
 
     @staticmethod
     def _sync_btn(button, on: bool) -> None:
@@ -663,55 +702,120 @@ class ChapterPage(QWidget):
         return panel
 
     def _rebuild_panel(self) -> None:
+        """The Controls panel: presets, then every parameter in folding groups, then the
+        overlays. Live maths lives in the Guide."""
         lay = self.panel_layout
         while lay.count():
             it = lay.takeAt(0)
             if it.widget():
                 it.widget().deleteLater()
         sim = self.sim
+        self.params_panel = None
+        self._preset_btns = []
         if sim is None:
             return
-        self.live = None
-        if sim.LIVE_MATH:
-            h = QLabel("LIVE MATH")
-            h.setProperty("role", "section")
-            lay.addWidget(h)
-            note = QLabel("The rules, with the focus agent's numbers plugged in right now.")
-            note.setProperty("role", "faint")
-            note.setWordWrap(True)
-            lay.addWidget(note)
-            self.live = LiveMathPanel()
-            self.live.set_specs(sim.LIVE_MATH)
-            lay.addWidget(self.live)
-            lay.addSpacing(8)
-        self._ov_boxes: list = []
-        h = QLabel("SEE INSIDE")
-        h.setProperty("role", "section")
-        lay.addWidget(h)
-        for i, o in enumerate(sim.OVERLAYS):
-            key = f"Ctrl+{i + 1}" if len(sim.TOOLS) > 1 else f"{i + 1}"
-            cb = QCheckBox(o.label.replace("&", "&&"))
-            cb.setChecked(sim.show.get(o.key))
-            cb.setToolTip((o.help + "  " if o.help else "") + (f"[{key}]" if i < 9 else ""))
-            cb.toggled.connect(lambda v, k=o.key: self.sim and self.sim.show.set(k, v))
-            cb.setObjectName(f"ov_{i + 1}")
-            self._ov_boxes.append((o.key, cb))
-            lay.addWidget(cb)
-        lay.addSpacing(8)
+        self.guide.set_live(sim.LIVE_MATH)
+        cid = self.chapter.id if self.chapter else ""
+        if sim.PRESETS:
+            fold = Fold("PRESETS", "controls:presets", True,
+                        tip="Named starting points. Anything a preset doesn't mention goes "
+                            "back to its default.")
+            chips = QWidget()
+            flow = FlowLayout(chips, spacing=6)
+            group = QButtonGroup(fold)
+            for pr in sim.PRESETS:
+                b = QPushButton(pr.title)
+                b.setProperty("role", "preset")
+                b.setCheckable(True)
+                b.setToolTip(pr.tip)
+                b.clicked.connect(lambda _=False, pr=pr: self._apply_preset(pr))
+                group.addButton(b)
+                flow.addWidget(b)
+                self._preset_btns.append((pr, b))
+            self._preset_group = group
+            fold.body.addWidget(chips)
+            lay.addWidget(fold)
+        head = QHBoxLayout()
         h = QLabel("PARAMETERS")
         h.setProperty("role", "section")
-        lay.addWidget(h)
-        note = QLabel("Symbols match the Deep dive. ⟲ restarts the run.")
-        note.setProperty("role", "faint")
-        lay.addWidget(note)
-        panel = ParamPanel(sim.PARAMS, sim.p)
-        panel.changed.connect(self._param)
-        lay.addWidget(panel)
-        reset = QPushButton("Default parameters")
+        head.addWidget(h)
+        head.addStretch(1)
+        reset = QPushButton("Reset all")
         reset.setProperty("role", "ghost")
-        reset.clicked.connect(lambda: self.load(self.chapter, keep_tab=True))
-        lay.addWidget(reset)
+        reset.setToolTip("Every parameter back to its default")
+        reset.clicked.connect(lambda: self._apply_values({}))
+        head.addWidget(reset)
+        lay.addSpacing(4)
+        lay.addLayout(head)
+        note = QLabel("Hover a name for what it does. ⟲ restarts the run.")
+        note.setProperty("role", "faint")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        panel = ParamPanel(sim.PARAMS, sim.p, fold_key=f"params:{cid}")
+        panel.changed.connect(self._param)
+        self.params_panel = panel
+        lay.addWidget(panel)
+        self._ov_boxes: list = []
+        if sim.OVERLAYS:
+            fold = Fold("SEE INSIDE", "controls:overlays", False,
+                        tip="Visual layers that show what the algorithm is thinking")
+            fold.set_badge(f"{sum(bool(sim.show.get(o.key)) for o in sim.OVERLAYS)} on")
+            self._ov_fold = fold
+            for i, o in enumerate(sim.OVERLAYS):
+                key = f"Ctrl+{i + 1}" if len(sim.TOOLS) > 1 else f"{i + 1}"
+                cb = QCheckBox(o.label.replace("&", "&&"))
+                cb.setChecked(sim.show.get(o.key))
+                cb.setToolTip((o.help + "  " if o.help else "") + (f"[{key}]" if i < 9 else ""))
+                cb.toggled.connect(lambda v, k=o.key: self._overlay(k, v))
+                cb.setObjectName(f"ov_{i + 1}")
+                self._ov_boxes.append((o.key, cb))
+                fold.body.addWidget(cb)
+            lay.addSpacing(6)
+            lay.addWidget(fold)
         lay.addStretch(1)
+        self._sync_presets()
+
+    def _overlay(self, key: str, on: bool) -> None:
+        if self.sim:
+            self.sim.show.set(key, on)
+            n = sum(bool(self.sim.show.get(o.key)) for o in self.sim.OVERLAYS)
+            self._ov_fold.set_badge(f"{n} on")
+
+    def _apply_preset(self, preset) -> None:
+        self._apply_values(preset.values)
+        self.toast.show_message(f"<b>{html.escape(preset.title)}</b>"
+                                + (f"<br>{html.escape(preset.tip)}" if preset.tip else ""),
+                                3500)
+
+    def _apply_values(self, values: dict) -> None:
+        if not self.sim:
+            return
+        try:
+            self.sim.apply_values(values)
+        except Exception as e:
+            self._failed(f"preset: {type(e).__name__}: {e}")
+            return
+        self.viewport.clock.reset()
+        if self.params_panel is not None:
+            self.params_panel.refresh(self.sim.p)
+        self._sync_presets()
+
+    def _sync_presets(self) -> None:
+        """Light up the preset the current values match exactly, if any."""
+        if not self.sim or not self._preset_btns:
+            return
+        p = self.sim.p
+        match = None
+        for pr, _ in self._preset_btns:
+            want = {s.key: s.clamp(pr.values.get(s.key, p.default(s.key)))
+                    for s in self.sim.PARAMS}
+            if all(want[k] == p.get(k) for k in want):
+                match = pr
+                break
+        self._preset_group.setExclusive(False)
+        for pr, b in self._preset_btns:
+            b.setChecked(pr is match)
+        self._preset_group.setExclusive(True)
 
     # ---------------------------------------------------------------- loading
     def load(self, chapter: ChapterInfo, keep_tab: bool = False) -> None:
@@ -858,11 +962,19 @@ class ChapterPage(QWidget):
         self.viewport.set_sim(self.sim)
         self.viewport.clock.paused = False
         self.play.setText("Pause")
+        self._set_speed(self.sim.playback)
         self._rebuild_panel()
         self._setup_lab(chapter)
         self.statusText.emit(f"{chapter.title} · running on {dev}")
 
     # ---------------------------------------------------------------- actions
+    def _set_speed(self, speed: float) -> None:
+        """Start at the chapter's playback speed and light up the matching button."""
+        speed = min(self._speeds, key=lambda s: abs(s - speed))
+        self.viewport.clock.speed = speed
+        self.speed_group.button(self._speeds.index(speed)).setChecked(True)
+        self._fit_toolbar()
+
     def toggle_pause(self) -> None:
         c = self.viewport.clock
         c.paused = not c.paused
@@ -885,6 +997,7 @@ class ChapterPage(QWidget):
                 self.sim.set_param(key, value)
             except Exception as e:
                 self._failed(f"{key}: {type(e).__name__}: {e}")
+            self._sync_presets()
 
     def _hotkey(self, name: str) -> None:
         if name == "Space":
@@ -940,12 +1053,12 @@ class ChapterPage(QWidget):
         self.hud.move(16, 16)
         self.hud.show()
         self.hud.raise_()
-        if self.live is not None and self.inspector.isVisible():
+        if self._live_ok and self.guide.live_visible:
             try:
-                self.live.update_values(self.sim.live_math())
+                self.guide.live.update_values(self.sim.live_math())
             except Exception:
                 traceback.print_exc()
-                self.live = None
+                self._live_ok = False
         self._check_experiments()
         for key, cb in getattr(self, "_ov_boxes", []):   # keys can flip overlays (e.g. V)
             on = bool(self.sim.show.get(key))
@@ -953,6 +1066,7 @@ class ChapterPage(QWidget):
                 cb.blockSignals(True)
                 cb.setChecked(on)
                 cb.blockSignals(False)
+                self._overlay(key, on)
 
     # ------------------------------------------------------------ lab furniture
     def _setup_lab(self, chapter: ChapterInfo) -> None:
@@ -1002,10 +1116,10 @@ class ChapterPage(QWidget):
         settings.save({"progress": prog})
         self.guide.set_done(key, done)
         exp = next((e for e in self.sim.EXPERIMENTS if e.key == key), None) if self.sim else None
-        if announce and exp:
+        if announce and exp and self.guide.goals.opened:   # closed goals tick quietly
             learn = (f"<br><span style='color:#99f6e4'>{exp.learn}</span>" if exp.learn
                      else "")
-            self.toast.show_message(f"<b>✓ Experiment complete: {exp.title}</b>{learn}", 7000)
+            self.toast.show_message(f"<b>✓ Goal complete: {exp.title}</b>{learn}", 7000)
 
     def set_focus_mode(self, on: bool) -> None:
         if on == self.focus_mode:

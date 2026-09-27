@@ -26,8 +26,10 @@ from ailab.core import (
     LiveValue,
     Overlay,
     Param,
+    Preset,
     Simulation,
     Tool,
+    section,
 )
 from ailab.core.memory import FieldMemory, TraceMemory
 from ailab.core.params import fmt
@@ -178,39 +180,83 @@ class Sim(Simulation):
     background = "grass"
     seeded = False          # no randomness unless sensor noise is turned up
     PARAMS = [
-        Param("track", "Track", "Grand Prix", choices=tuple(TRACKS), restart=True,
-              help="Which circuit to drive. The car has never seen any of them."),
-        Param("n_rays", "Lidar rays", 61, 5, 361, 2, "More rays: finer view, more work.", "N"),
-        Param("fov", "Lidar field of view", 240.0, 60.0, 360.0, 5.0,
-              "How wide the fan of rays is. Narrow: it can't see the corner coming.",
-              "\\Phi", "deg"),
-        Param("range", "Lidar range", 30.0, 5.0, 80.0, 1.0,
-              "How far each ray can see. Short: it must drive slower to stop in time.",
-              "R_{max}"),
-        Param("noise", "Sensor noise", 0.0, 0.0, 1.5, 0.05,
-              "Gaussian noise on each range (seeded, so still deterministic).", "\\sigma"),
-        Param("bubble", "Safety bubble", 1.6, 0.0, 6.0, 0.1,
-              "Rays around the closest obstacle are treated as blocked.", "b"),
-        Param("threshold", "Gap threshold", 6.0, 1.0, 30.0, 0.5,
-              "A ray counts as free if it sees farther than this.", "r_{gap}"),
-        Param("aim", "Aim point", "Blend", choices=("Blend", "Deepest point", "Gap centre"),
-              help="Where in the chosen gap to aim: its deepest ray, its middle, or halfway."),
-        Param("lookahead_gain", "Lookahead gain", 0.3, 0.0, 1.5, 0.05,
-              "Lookahead distance grows with speed: L_d = k v + L_min.", "k", "s"),
-        Param("lookahead_min", "Min lookahead", 3.0, 1.0, 20.0, 0.5,
-              "The shortest distance ahead it aims at, even when slow.", "L_{min}"),
-        Param("v_max", "Top speed", 24.0, 3.0, 45.0, 0.5,
-              "The fastest it will ever go, on the longest straight.", "v_{max}", "u/s"),
-        Param("a_brake", "Braking", 18.0, 2.0, 40.0, 0.5, "Max deceleration.", "a_b", "u/s^2"),
-        Param("k_turn", "Slow down in turns", 2.0, 0.0, 8.0, 0.1,
-              "How much steering lowers the target speed. At 0 it takes corners flat out.",
-              "k_\\delta"),
-        Param("steer_rate", "Steering speed", 3.0, 0.5, 10.0, 0.1,
-              "How fast the wheels can turn. Slow steering reacts late in chicanes.",
-              "\\dot\\delta_{max}",
-              "rad/s"),
-        Param("map_tau", "Map memory", 60.0, 2.0, 600.0, 1.0,
-              "How long the occupancy map remembers a wall it no longer sees.", "\\tau_m", "s"),
+        *section(
+            "Track",
+            Param("track", "Track", "Grand Prix", choices=tuple(TRACKS), restart=True,
+                  help="Which circuit to drive. The car has never seen any of them."),
+        ),
+        *section(
+            "Lidar",
+            Param("n_rays", "Lidar rays", 61, 5, 361, 2, "More rays: finer view, more work.",
+                  "N"),
+            Param("fov", "Lidar field of view", 240.0, 60.0, 360.0, 5.0,
+                  "How wide the fan of rays is. Narrow: it can't see the corner coming.",
+                  "\\Phi", "deg"),
+            Param("range", "Lidar range", 30.0, 5.0, 80.0, 1.0,
+                  "How far each ray can see. Short: it must drive slower to stop in time.",
+                  "R_{max}"),
+            Param("noise", "Sensor noise", 0.0, 0.0, 1.5, 0.05,
+                  "Gaussian noise on each range (seeded, so still deterministic).", "\\sigma"),
+            Param("map_tau", "Map memory", 60.0, 2.0, 600.0, 1.0,
+                  "How long the occupancy map remembers a wall it no longer sees.",
+                  "\\tau_m", "s"),
+        ),
+        *section(
+            "Follow the gap",
+            Param("bubble", "Safety bubble", 1.6, 0.0, 6.0, 0.1,
+                  "Rays around the closest obstacle are treated as blocked.", "b"),
+            Param("threshold", "Gap threshold", 6.0, 1.0, 30.0, 0.5,
+                  "A ray counts as free if it sees farther than this.", "r_{gap}"),
+            Param("aim", "Aim point", "Blend", choices=("Blend", "Deepest point", "Gap centre"),
+                  help="Where in the chosen gap to aim: its deepest ray, its middle, or "
+                       "halfway."),
+        ),
+        *section(
+            "Steering",
+            Param("lookahead_gain", "Lookahead gain", 0.3, 0.0, 1.5, 0.05,
+                  "Lookahead distance grows with speed: L_d = k v + L_min.", "k", "s"),
+            Param("lookahead_min", "Min lookahead", 3.0, 1.0, 20.0, 0.5,
+                  "The shortest distance ahead it aims at, even when slow.", "L_{min}"),
+            Param("steer_rate", "Steering speed", 3.0, 0.5, 10.0, 0.1,
+                  "How fast the wheels can turn. Slow steering reacts late in chicanes.",
+                  "\\dot\\delta_{max}", "rad/s"),
+            Param("max_steer", "Max steering angle", 0.5, 0.1, 1.0, 0.05,
+                  "How far the front wheels can turn. Small: it can't make tight hairpins.",
+                  "\\delta_{max}", "rad"),
+        ),
+        *section(
+            "Speed",
+            Param("v_max", "Top speed", 24.0, 3.0, 45.0, 0.5,
+                  "The fastest it will ever go, on the longest straight.", "v_{max}", "u/s"),
+            Param("a_brake", "Braking", 18.0, 2.0, 40.0, 0.5, "Max deceleration.", "a_b",
+                  "u/s^2"),
+            Param("k_turn", "Slow down in turns", 2.0, 0.0, 8.0, 0.1,
+                  "How much steering lowers the target speed. At 0 it takes corners flat out.",
+                  "k_\\delta"),
+            Param("margin", "Stopping margin", 1.5, 0.0, 6.0, 0.1,
+                  "Space it keeps free when working out if it can still stop. 0: it plans "
+                  "to stop touching the wall.", "m"),
+            Param("a_max", "Acceleration", 12.0, 2.0, 40.0, 0.5,
+                  "How hard the motor can speed the car up.", "a_{max}", "u/s^2"),
+            Param("k_v", "Throttle response", 3.0, 0.5, 10.0, 0.1,
+                  "How quickly it closes the gap to its target speed. Low: sluggish.", "k_p"),
+        ),
+    ]
+    PRESETS = [
+        Preset("default", "Default", {}, "Balanced: fast on straights, careful in corners."),
+        Preset("careful", "Cautious", {"v_max": 14.0, "k_turn": 4.0, "margin": 3.0},
+               "Slow and safe. Count the crashes, then compare lap times."),
+        Preset("flatout", "Flat out", {"v_max": 40.0, "k_turn": 0.5, "a_brake": 30.0,
+                                       "a_max": 25.0},
+               "Barely slows for corners. The braking rule has to save it."),
+        Preset("noisy", "Noisy lidar", {"noise": 0.8},
+               "Every ray lies a little. Watch the chosen gap flicker."),
+        Preset("short", "Short-sighted", {"range": 10.0},
+               "It can only see 10 units ahead, so it must drive slower to stop in time."),
+        Preset("tunnel", "Tunnel vision", {"fov": 90.0},
+               "A narrow fan of rays: corners arrive without warning."),
+        Preset("hairpins", "Hairpins", {"track": "Hairpins"},
+               "Tight turns of known radius: a test for steering."),
     ]
     OVERLAYS = [
         Overlay("rays", "Lidar rays", True, "Every ray, fading with distance."),
@@ -260,7 +306,7 @@ class Sim(Simulation):
         LiveEq("brake", "Can it still stop in time?",
                r"v \le \sqrt{2\,a_b\,(d_{front} - m)}",
                "v: speed now · a_b: braking power · d_front: free distance straight ahead · "
-               "m: safety margin (1.5)"),
+               "m: stopping margin"),
         LiveEq("speed", "Target speed: the tightest limit wins",
                r"v^* = \min\!\Big(v_{max},\; \frac{v_{max}}{1 + k_\delta|\delta|},\; "
                r"\sqrt{2 a_b (d_{front} - m)}\Big)",
@@ -370,12 +416,12 @@ class Sim(Simulation):
         plan = self.plan
         # speed: slower in turns, and able to stop within the free distance ahead
         v_turn = P.v_max / (1 + P.k_turn * abs(plan["delta"]))
-        v_stop = np.sqrt(max(0.0, 2 * P.a_brake * (self.front - 1.5)))
+        v_stop = np.sqrt(max(0.0, 2 * P.a_brake * (self.front - P.margin)))
         self.v_target = min(P.v_max, v_turn, v_stop)
-        self.accel = float(np.clip(3.0 * (self.v_target - self.v), -P.a_brake, 12.0))
+        self.accel = float(np.clip(P.k_v * (self.v_target - self.v), -P.a_brake, P.a_max))
         # steering actuator can only turn so fast
         d = np.clip(plan["delta"] - self.delta, -P.steer_rate * dt, P.steer_rate * dt)
-        self.delta = float(np.clip(self.delta + d, -0.5, 0.5))
+        self.delta = float(np.clip(self.delta + d, -P.max_steer, P.max_steer))
         # disturbances from the keyboard: push the car and watch it recover
         if "Left" in inp.keys:
             self.theta += 1.6 * dt
@@ -649,12 +695,12 @@ class Sim(Simulation):
     # ------------------------------------------------------------- live math
     def live_math(self) -> dict[str, LiveValue]:
         P, plan = self.p, self.plan
-        m = 1.5
+        m = P.margin
         free = max(0.0, self.front - m)
         bound = float(np.sqrt(2 * P.a_brake * free))
         ok = self.v <= bound + 1e-6
         out = {"brake": LiveValue(f"{fmt(self.v, 1)} ≤ √(2·{fmt(P.a_brake, 1)}·({fmt(self.front, 1)}"
-                                  f"−{m})) = {fmt(bound, 1)}", ok,
+                                  f"−{fmt(m, 1)})) = {fmt(bound, 1)}", ok,
                                   "safe: it could stop before what's ahead" if ok
                                   else "too fast for the space ahead: braking hard")}
         v_turn = P.v_max / (1 + P.k_turn * abs(plan["delta"]))

@@ -67,7 +67,7 @@ so a trail's strength is effectively a *countdown of distance*: stronger near th
 Each ant has three smell sensors: left, front and right, reading $S_L, S_F, S_R$. The side
 sensors point $\theta_s$ to either side, and all three sit $d_s$ ahead of the ant. A reading
 adds up the pheromone $c$ in the 3×3 cells under the sensor and takes its logarithm, plus
-fixed "cues" for food or the nest nearby. The decision $\sigma_{turn}$ is $+1$ (turn left),
+cues for food or the nest nearby (their strengths are the Food smell and Nest smell sliders). The decision $\sigma_{turn}$ is $+1$ (turn left),
 $0$ (straight on) or $-1$ (turn right):
 
 $$
@@ -93,6 +93,36 @@ $$
 
 The $\sqrt{\Delta t}$ makes the random walk independent of the step size (it is a discrete
 Brownian motion), and $h$ is the path-integration weight.
+
+## Navigator ants: noticing you are lost
+
+Following a trail has a trap. If loaded ants end up following *each other's* marks in a
+circle, every lap refreshes the circle and nobody leaves: an **ant mill**. An ant inside a
+mill cannot see its shape. What it *can* notice is its own turning: on a normal trip left
+and right turns cancel out, but in a mill it keeps turning the same way.
+
+So each ant keeps a running total $W$ of its recent steering, in radians, where older
+turning fades away over the turning memory $\tau_w$. Each step adds the turn it chose,
+$\omega\Delta t$ times the bracket in the steering rule above (the random wander is left
+out, so chance wiggles don't count):
+
+$$
+W \leftarrow W\,e^{-\Delta t/\tau_w} + \omega\Delta t\,\Big(\sigma_{turn} + h\,[\text{loaded}]\,\sin(\theta_{nest} - \theta)\Big)
+$$
+
+One full circle is $2\pi$ radians. When the ant has turned more than $n_{lost}$ circles
+the same way, it decides it is lost and becomes a **navigator** for $T_n$ seconds:
+
+$$
+|W| > 2\pi\,n_{lost} \quad\Longrightarrow\quad
+\theta \leftarrow \theta + \omega\Delta t\; g_n \sin(\theta_{nest} - \theta) + \sigma\sqrt{\Delta t}\;\xi
+$$
+
+A navigator ignores smells and steers home by its compass with strength $g_n$, and it
+lays no pheromone, so it stops feeding the loop. At the nest (or after $T_n$ seconds, in
+case a wall stands between it and home) it becomes an ordinary ant again. Real desert ants
+(*Cataglyphis*) really do navigate home by such a path-integration compass; the
+"I am circling" trigger is this Lab's invention, one simple way to escape a loop.
 
 ## The binary choice model
 

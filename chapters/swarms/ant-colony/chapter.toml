@@ -17,7 +17,8 @@ pheromones: some mark "no entry" with a repellent signal (Pharaoh's ants), some 
 nest-mates by leading them one by one (tandem running), some navigate mostly by sight and
 sun (desert ants), and crowding itself can change what ants do. Here there are just two
 attractive trails, identical ants and a log-scale nose: enough to show how a colony can
-find short paths without any ant knowing the map.
+find short paths without any ant knowing the map. The navigator ants' "am I circling?"
+rule is invented for this Lab: real army ants caught in a mill can circle until they die.
 """
 
 [glossary]
@@ -30,4 +31,5 @@ find short paths without any ant knowing the map.
 '\theta,\; \theta_{nest}' = "The ant's heading, and the direction of the nest from it"
 '\xi' = "A random number between -1 and 1 (seeded: the same every run)"
 'A,\, B,\, P_A' = "Ants that used branch A and B so far, and the chance the next one picks A"
+'W' = "How far an ant has turned lately, in radians; old turning fades away"
 'k,\, n' = "Choice-model constants: how big an early lead must be, and how sharply it's amplified"
