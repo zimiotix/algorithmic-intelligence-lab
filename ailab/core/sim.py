@@ -1,0 +1,134 @@
+"""The contract every chapter's simulation implements.
+
+Determinism rules (checked by ``tests/test_chapter_contract.py`` for every chapter):
+  * the simulation advances only in fixed steps of ``dt``;
+  * all randomness comes from ``seed`` (numpy ``Generator`` or Warp's counter RNG);
+  * GPU kernels never depend on thread execution order (double buffers, integer atomics);
+  * the only outside influence is the ``InputState`` handed to ``step``.
+Same seed + same inputs => same run, so every run can be replayed and tested.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from .params import Overlay, Param, Values
+
+
+@dataclass
+class InputState:
+    """What the learner is doing during one fixed step, in world coordinates."""
+
+    mouse: tuple[float, float] | None = None       # None when the cursor is outside
+    buttons: frozenset[str] = frozenset()          # held: "left" | "right" | "middle"
+    keys: frozenset[str] = frozenset()             # held keys: "Left", "Up", "Shift", "C", ...
+    clicks: tuple[tuple[str, tuple[float, float]], ...] = ()   # presses since last step
+    key_presses: tuple[str, ...] = ()              # keys pressed since last step
+
+    @property
+    def mods(self) -> frozenset[str]:
+        return self.keys & {"Shift", "Ctrl", "Alt"}
+
+
+@dataclass
+class SimContext:
+    device: str = "cpu"          # "cuda:0" or "cpu"
+    seed: int = 1
+
+    @property
+    def on_cpu(self) -> bool:
+        return not self.device.startswith("cuda")
+
+
+@dataclass
+class HudItem:
+    label: str
+    value: str
+    accent: bool = False
+
+
+class Simulation:
+    """Base class. Subclasses set the class attributes and override the methods."""
+
+    world: tuple[float, float, float, float] = (0.0, 0.0, 160.0, 90.0)  # x0, y0, x1, y1
+    dt: float = 1.0 / 60.0
+    background: str = "void"
+    # False when the default configuration uses no randomness at all (the seed only
+    # matters once e.g. sensor noise is switched on).
+    seeded: bool = True
+    PARAMS: list[Param] = []
+    OVERLAYS: list[Overlay] = []
+
+    def __init__(self, ctx: SimContext):
+        self.ctx = ctx
+        self.device = ctx.device
+        self.p = Values(self.PARAMS, on_cpu=ctx.on_cpu)
+        self.show = Values(self.OVERLAYS)
+        self.seed = ctx.seed
+        self.t = 0.0
+        self.steps = 0
+        self.focus: int = 0          # the agent the overlays explain
+        self.reset(ctx.seed)
+
+    # ---------------------------------------------------------------- lifecycle
+    def reset(self, seed: int) -> None:
+        self.seed = seed
+        self.t = 0.0
+        self.steps = 0
+
+    def step(self, inp: InputState) -> None:  # advance exactly self.dt
+        raise NotImplementedError
+
+    def draw(self, scene) -> None:
+        raise NotImplementedError
+
+    def advance(self, inp: InputState) -> None:
+        self.step(inp)
+        self.t += self.dt
+        self.steps += 1
+
+    # --------------------------------------------------------------------- info
+    def hud(self) -> list[HudItem]:
+        return []
+
+    def state_arrays(self) -> list[np.ndarray]:
+        """Arrays that fully describe the state; used for determinism checks."""
+        return []
+
+    def digest(self) -> str:
+        h = hashlib.sha256()
+        for a in self.state_arrays():
+            h.update(np.ascontiguousarray(a).tobytes())
+        return h.hexdigest()[:16]
+
+    # ------------------------------------------------------------------- params
+    def set_param(self, key: str, value) -> None:
+        self.p.set(key, value)
+        if self.p.spec(key).restart:
+            self.reset(self.seed)
+        else:
+            self.on_param(key)
+
+    def on_param(self, key: str) -> None:
+        """Hook for live (non-restarting) parameter changes."""
+
+
+@dataclass
+class ScriptedInput:
+    """Deterministic synthetic input for tests and headless snapshots."""
+
+    kind: str = "none"                  # "none" | "circle"
+    center: tuple[float, float] = (80.0, 45.0)
+    radius: float = 25.0
+    period: float = 4.0
+    presses: dict[int, tuple[str, ...]] = field(default_factory=dict)
+
+    def at(self, step: int, dt: float) -> InputState:
+        if self.kind == "circle":
+            a = 2 * np.pi * step * dt / self.period
+            m = (self.center[0] + self.radius * np.cos(a), self.center[1] + self.radius * np.sin(a))
+            return InputState(mouse=m, key_presses=self.presses.get(step, ()))
+        return InputState(key_presses=self.presses.get(step, ()))

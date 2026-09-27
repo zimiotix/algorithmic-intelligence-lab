@@ -1,0 +1,11 @@
+title = "{title}"
+order = 100
+summary = "One sentence a 15-year-old would want to click."
+difficulty = 2
+tags = []
+compute = "cpu"          # "gpu" if it needs thousands of agents (write Warp kernels)
+memory = []              # any of: "environmental", "working", "episodic"
+status = "draft"         # "ready" once intro, advanced and tests are done
+controls = [
+  ["Left click", "What clicking does"],
+]

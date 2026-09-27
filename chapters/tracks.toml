@@ -1,0 +1,44 @@
+# The curriculum is split into tracks. A track only appears in the app once it has a
+# chapter. Order and colour live here; chapters pick their track by folder name.
+
+[tracks.swarms]
+title = "Swarms & Emergence"
+order = 10
+color = "#2dd4bf"
+description = "Many simple agents, local rules, surprising global behaviour."
+
+[tracks.control]
+title = "Perception & Control"
+order = 20
+color = "#fbbf24"
+description = "Sense the world, decide, act: feedback loops that steer machines."
+
+[tracks.planning]
+title = "Search & Planning"
+order = 30
+color = "#a78bfa"
+description = "Finding paths and plans: BFS, Dijkstra, A*, RRT, potential fields."
+
+[tracks.estimation]
+title = "Estimation & Belief"
+order = 40
+color = "#38bdf8"
+description = "Knowing where you are from noisy senses: Bayes, Kalman and particle filters."
+
+[tracks.optimization]
+title = "Optimisation & Evolution"
+order = 50
+color = "#fb7185"
+description = "Improving solutions: hill climbing, annealing, genetic algorithms, CMA-ES."
+
+[tracks.games]
+title = "Games & Decisions"
+order = 60
+color = "#f97316"
+description = "Adversaries and uncertainty: minimax, alpha-beta, MCTS, auctions."
+
+[tracks.automata]
+title = "Cellular Automata & Patterns"
+order = 70
+color = "#34d399"
+description = "Grids of tiny rules: Life, reaction-diffusion, sandpiles, wave function collapse."

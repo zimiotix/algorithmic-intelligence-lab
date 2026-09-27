@@ -1,0 +1,10 @@
+# Notes for AI assistants working on this repo
+
+- Python via `uv` (`uv sync`, `uv run ...`). Python ≥ 3.12; the venv is pinned to 3.13.
+- Run `uv run pytest -q` (Warp CPU backend, ~minutes) and `uv run ruff check ailab chapters tools`.
+- `CONTRIBUTING.md` is the chapter-authoring contract; follow it for any new chapter.
+- Never let ruff rewrite `float(0.0)` / `int(0)` in Warp kernels (UP018 is disabled on purpose).
+- Visual check without a window: `uv run tools/snap.py <id> out.png` (EGL, headless).
+  App window check: `AILAB_CAPTURE=out.png,<secs>[,<tab>[,<section>]] uv run ailab --no-boot --chapter <id>`.
+- Equations shown in `advanced.md` must match the code and have a test in the chapter's `tests/`.
+- Generated artefacts (thumbnails, equation SVGs, videos) go to `~/.cache/ailab` or are gitignored.

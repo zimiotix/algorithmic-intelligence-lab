@@ -1,0 +1,14 @@
+title = "Ant Colony: Memory in the Dirt"
+order = 20
+summary = "No ant knows the way, yet the colony finds the shortest path. Stigmergy in action."
+difficulty = 2
+tags = ["stigmergy", "pheromones", "shortest path", "double bridge"]
+compute = "gpu"
+memory = ["environmental", "working"]
+prerequisites = ["swarms.fish-school"]
+controls = [
+  ["Left drag", "Build walls"],
+  ["Right drag", "Erase walls"],
+  ["Shift + click", "Drop a food pile"],
+  ["Ctrl + click", "Choose the ant whose sensors are shown"],
+]

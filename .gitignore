@@ -1,0 +1,21 @@
+# Python / uv
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# Generated media is reproducible: render it, don't commit it.
+chapters/**/media/*.mp4
+chapters/**/media/*.gif
+media/
+*.png
+!docs/img/*
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

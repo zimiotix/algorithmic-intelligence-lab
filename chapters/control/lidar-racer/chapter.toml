@@ -1,0 +1,14 @@
+title = "Lidar Racer: Follow the Gap"
+order = 10
+summary = "An autonomous car that only knows what its laser rays tell it. Watch every decision."
+difficulty = 2
+tags = ["lidar", "follow-the-gap", "pure pursuit", "bicycle model", "ray casting"]
+compute = "cpu"
+memory = ["environmental", "episodic"]
+controls = [
+  ["Left click", "Drop a traffic cone"],
+  ["Right click", "Remove a cone"],
+  ["C", "Clear all cones"],
+  ["Arrow keys", "Shove the car: see how it recovers"],
+  ["Wheel / middle-drag", "Zoom / pan"],
+]

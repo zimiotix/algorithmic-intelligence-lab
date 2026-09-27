@@ -1,0 +1,13 @@
+title = "Fish School Under Attack"
+order = 10
+summary = "Thousands of fish, three local rules and a few senses. You are the predator."
+difficulty = 2
+tags = ["boids", "Couzin zones", "emergence", "spatial hashing"]
+compute = "gpu"
+memory = ["working"]
+controls = [
+  ["Move the mouse", "You are the predator; its motion is your direction vector"],
+  ["Fast swipe", "Attack: fast passes can catch fish"],
+  ["Left click", "Choose the fish the overlays explain"],
+  ["Wheel / middle-drag", "Zoom / pan"],
+]
