@@ -41,9 +41,13 @@ marks left in the environment.
 > equal branches; the gold pile is richer. Ants mark rich food more strongly, and the
 > colony picks it, though no ant ever compares the two.
 
-> **Make an ant mill.** Pick the **Ant mill** preset (no sense of direction home).
-> Sometimes ants start following each other in a circle forever. Real army ants do this
-> too. Then try **Mill rescue**: ants that notice they keep circling turn navigator
+> **Why do ants go home?** An ant can only stay out so long before it is hungry. Then it
+> walks home (violet), eats and rests in the nest, and goes out again. Switch off *Ants get
+> hungry* and watch lost ants, and ants circling rocks with food, never come back.
+
+> **Make an ant mill.** Pick the **Ant mill** preset (no sense of direction home, no
+> hunger). Sometimes ants start following each other in a circle forever. Real army ants
+> do this too. Then try **Mill rescue**: ants that notice they keep circling turn navigator
 > (violet) and walk home.
 
 > **Forgetful world.** Set *Evaporation time* very low. Trails can't survive the trip

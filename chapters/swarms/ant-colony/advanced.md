@@ -230,6 +230,43 @@ along the home trail, did worse than no navigators at all, because trails trappe
 navigators too. Real desert ants (*Cataglyphis*) do navigate home by a path-integration
 compass; the "am I circling?" and Bug-algorithm rules are this Lab's inventions.
 
+## Why ants go home: hunger
+
+An ant carrying food has a reason to go home. A searcher, in the rules so far, has none: it
+walks until it happens to find food. Real foragers do come back, for a plain reason: an ant
+carries only a little fuel in its crop, and it eats and rests in the nest.
+
+So each ant counts $t_{out}$, the time since it last left the nest. It can stay out for
+$T_{trip}$ seconds (the trip length). After that it is hungry:
+
+$$
+t_{out} > T_{trip} \;\Rightarrow\; \text{home by compass}
+$$
+
+A hungry ant walks home the way a navigator does: compass toward the nest and the Bug
+algorithm around walls, smells ignored and no pheromone laid. At the nest it rests for
+$T_{rest}$ seconds, then heads out again in a random direction. An ant that merely passes
+through the nest, or brings food home, has a bite and goes on: its $t_{out}$ restarts at
+zero. Hungry ants are drawn violet, like navigators.
+
+**What we measured** (Open field, 1,500 ants, five minutes, four seeds). Without hunger,
+about 20% of all the food was picked up but *never delivered*: half the colony ended up
+holding food, many of them circling a rock round their own trail, a mill that wall
+following keeps alive and the "am I circling?" test can't see (it ignores wall turning on
+purpose). With a 90 s trip, every seed delivered 99.8 to 100% of the food, and no ant was
+left holding any. In the Maze and the Two foods fork, hunger made no clear difference. Too
+short a trip does hurt: at 45 s (one run), ants gave up before reaching the far piles and left 29% of
+the food behind. A colony's foraging range is set by how far its ants can go on one crop
+of fuel.
+
+Hunger rescues these ants only after $T_{trip}$. A stronger sense of home works sooner: with
+$h = 1.5$ instead of 0.5, loaded ants stop circling rocks and the border, and the Open field
+delivers everything a minute earlier. But in corridor worlds the straight line home runs
+into rock, and the Double bridge and Two foods delivered 25 to 45% less (two seeds each).
+Weighting the trail by its strength (a faint old trail is mostly noise) did not recover
+that. No single $h$ is best everywhere, so the default stays 0.5: try raising it in the
+Open field.
+
 ## The binary choice model
 
 Deneubourg and Goss modelled the double bridge with a choice probability. If $A$ and $B$

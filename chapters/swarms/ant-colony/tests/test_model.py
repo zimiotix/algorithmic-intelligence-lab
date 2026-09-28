@@ -128,6 +128,50 @@ def test_navigators_can_be_switched_off():
     sim = _lost_colony(False, "circling")
     sim.advance(InputState())
     assert (sim.nav.numpy() == 0).all()
+
+
+def _out_for(sim, seconds: float) -> None:
+    sim.away = wp.array(np.full(len(sim.pos), seconds, np.float32), dtype=float,
+                        device=sim.device)
+
+
+def test_hunger_rule_t_out_over_t_trip():
+    # t_out > T_trip => home by compass (no marks); a moment less => still foraging
+    for over, hungry in ((1.0, True), (-1.0, False)):
+        sim = _lost_colony(False, "searching")
+        sim.lost_clock = wp.zeros(len(sim.pos), dtype=float, device=sim.device)
+        _out_for(sim, sim.p.trip + over)
+        sim.advance(InputState())
+        assert (sim.field.numpy().sum() == 0) == hungry
+    sim = _lost_colony(False, "searching")
+    sim.set_param("trips", False)                   # hunger off: never hungry
+    _out_for(sim, 1e4)
+    sim.advance(InputState())
+    assert sim.field.numpy().sum() > 0
+
+
+def test_hungry_ants_walk_home_rest_and_go_out_again():
+    sim = _lost_colony(False, "searching")
+    sim.lost_clock = wp.zeros(len(sim.pos), dtype=float, device=sim.device)
+    sim.set_param("rest", 2.0)
+    _out_for(sim, sim.p.trip + 1)
+    d0 = np.linalg.norm(sim.pos.numpy() - sim.nest, axis=1).mean()
+    for _ in range(120):                             # two seconds of compass walking
+        sim.advance(InputState())
+    assert np.linalg.norm(sim.pos.numpy() - sim.nest, axis=1).mean() < d0 - 10
+    rested = np.zeros(len(sim.pos), bool)
+    for _ in range(60 * 30):
+        before = sim.pos.numpy().copy()
+        resting = sim.away.numpy() < 0
+        sim.advance(InputState())
+        assert (sim.pos.numpy()[resting] == before[resting]).all()   # resting: still
+        rested |= sim.away.numpy() < 0
+        if rested.all():
+            break
+    assert rested.all(), f"{int((~rested).sum())} hungry ants never got home to rest"
+    for _ in range(int(2.0 * 60) + 2):               # T_rest later everyone is out again
+        sim.advance(InputState())
+    assert (sim.away.numpy() >= 0).all()
     assert sim.field.numpy().sum() > 0
 
 
@@ -183,7 +227,8 @@ def test_the_maze_has_one_unbroken_wall():
 
 PURE_WALL_FOLLOWER = {"scenario": "Maze", "n_ants": 50, "variety": 0.0, "wander": 0.0,
                       "deposit": 0.0, "food_cue": 0.0, "nest_cue": 0.0, "homing": 0.0,
-                      "navigators": False, "hug_release": 0.0, "hug_time": 20.0}
+                      "navigators": False, "trips": False, "hug_release": 0.0,
+                      "hug_time": 20.0}
 
 
 def test_hand_on_wall_takes_every_ant_to_the_food_and_back():
