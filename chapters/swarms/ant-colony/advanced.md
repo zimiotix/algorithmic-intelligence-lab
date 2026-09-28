@@ -267,6 +267,41 @@ Weighting the trail by its strength (a faint old trail is mostly noise) did not 
 that. No single $h$ is best everywhere, so the default stays 0.5: try raising it in the
 Open field.
 
+## The colony's store: a hungry colony changes its ways
+
+Food brought home goes into the nest's **store**, and the whole colony eats from it: the
+queen, the brood and the ants themselves. Let $S$ be the food in the store, $N$ the number
+of ants and $e$ what each ant eats per minute. Each step, every load brought home adds one
+unit and the colony eats $N e/60$ per second, and the store can't go below empty:
+
+$$
+S \leftarrow \max\!\big(S + \text{loads} - \tfrac{N e}{60}\,\Delta t,\; 0\big)
+$$
+
+The colony's **hunger** $H$ is how empty the store is, compared with a store $S_{full}$ that
+feels full: 0 when fed, 1 when the store is empty.
+
+$$
+H = \max\!\big(0,\; 1 - S/S_{full}\big)
+$$
+
+Hunger changes two things. Searchers roam wider: their wander grows by the restlessness
+$k_r$. And ants carrying food rush home: their path-integration pull grows by the
+desperation $k_d$.
+
+$$
+\sigma_{search} = \sigma_i\,(1 + k_r H), \qquad h_{loaded} = h + k_d H
+$$
+
+Real colonies do adjust foraging to their stores: a hungry colony sends out more foragers
+and they recruit harder, and a well-fed one slows down (for example, Cassill and Tschinkel's
+work on fire ants). Our two rules are a simple stand-in for that. With **New food every**
+$T_{grow}$ above 0, a pile appears somewhere away from the nest every $T_{grow}$ seconds,
+so the colony can run out, go hungry and recover. The **Hungry colony** preset shows it:
+in our runs the store ran empty after about a minute; on one seed the hunger response
+refilled it within 30 s where the colony without it starved for two and a half minutes
+(7,942 food delivered in five minutes against 5,749), on another it made no difference.
+
 ## The binary choice model
 
 Deneubourg and Goss modelled the double bridge with a choice probability. If $A$ and $B$

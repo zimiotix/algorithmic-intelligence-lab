@@ -22,7 +22,9 @@ on. Real Pharaoh's ants do use a "no entry" signal, Lasius niger workers do mark
 food more strongly, and real ants do follow walls (thigmotaxis), but our triggers, feelers
 and numbers are simplified. Hunger here is a single clock (out longer than T_trip: go
 home, rest T_rest); real foragers have a crop that empties at a rate set by effort and
-temperature, and they share food mouth to mouth in the nest. The navigator ants' "am I
+temperature, and they share food mouth to mouth in the nest. The colony's store and hunger
+are one number each; a real colony senses hunger through its larvae and nurses, and a
+hungry one changes how many ants forage, not only how they walk. The navigator ants' "am I
 circling?" rule and the Bug algorithm that navigators and hungry ants use (borrowed from
 robotics) are this Lab's inventions: real army ants caught in a mill can circle until
 they die.
@@ -43,6 +45,10 @@ they die.
 'Q' = "Quality of the food an ant carries: 1 for ordinary food, higher for rich food"
 't_{lost}' = "Time since an ant last reached home or food, not counting time along walls"
 't_{out}' = "Time since an ant last left the nest"
+'S' = "Food in the nest's store"
+'H' = "The colony's hunger: 0 when its store is full, 1 when it is empty"
+'N' = "The number of ants"
+'\sigma_{search},\; h_{loaded}' = "A searcher's wander and a loaded ant's pull toward home, after hunger"
 'T_{trip},\; T_{rest}' = "How long an ant can stay out before it must go home to eat, and how long it then rests"
 'v_i,\; \sigma_i,\; f_i' = "Ant i's own speed, wander, and trail loyalty (its personality)"
 'z_1,\, z_2,\, z_3' = "Ant i's three random draws from a standard normal, fixed at birth"

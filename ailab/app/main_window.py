@@ -717,6 +717,7 @@ class ChapterPage(QWidget):
         if sim is None:
             return
         self.guide.set_live(sim.LIVE_MATH)
+        self.guide.set_legend(sim.LEGEND)
         cid = self.chapter.id if self.chapter else ""
         if sim.PRESETS:
             fold = Fold("PRESETS", "controls:presets", True,

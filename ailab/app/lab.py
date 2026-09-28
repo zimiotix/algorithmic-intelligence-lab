@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.params import Experiment, LiveEq, LiveValue, Tool
+from ..core.params import Experiment, LiveEq, LiveValue, Swatch, Tool
 from ..text import latex
 from . import theme
 from .markdown_view import rasterize_svg
@@ -401,6 +401,14 @@ class GuidePanel(QFrame):
         self.tool_fold.body.addWidget(self.tool_card)
         self.lay.addWidget(self.tool_fold)
 
+        # colour key
+        self.legend = Fold("COLOURS", "guide:legend", True,
+                           tip="What each colour on screen means")
+        self.legend_box = QVBoxLayout()
+        self.legend_box.setSpacing(3)
+        self.legend.body.addLayout(self.legend_box)
+        self.lay.addWidget(self.legend)
+
         # live maths
         self.live_fold = Fold("LIVE MATH", "guide:live", True,
                               tip="The rules, with the focus agent's numbers plugged in")
@@ -452,6 +460,33 @@ class GuidePanel(QFrame):
     @property
     def live_visible(self) -> bool:
         return self.isVisible() and self.live_fold.opened and bool(self.live.cards)
+
+    def set_legend(self, items: list[Swatch]) -> None:
+        while self.legend_box.count():
+            w = self.legend_box.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        for it in items:
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 1, 0, 1)
+            h.setSpacing(8)
+            chip = QLabel()
+            chip.setFixedSize(14, 14)
+            c = it.color
+            chip.setStyleSheet({
+                "glow": f"background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, "
+                        f"fy:0.5, stop:0 {c}, stop:0.55 {c}, stop:1 transparent); "
+                        f"border-radius:7px;",
+                "ring": f"background: transparent; border: 2px solid {c}; border-radius:7px;",
+            }.get(it.shape, f"background:{c}; border-radius:7px;"))
+            text = QLabel(it.label)
+            text.setWordWrap(True)
+            text.setStyleSheet("font-size:12px;")
+            h.addWidget(chip, 0, Qt.AlignTop)
+            h.addWidget(text, 1)
+            self.legend_box.addWidget(row)
+        self.legend.setVisible(bool(items))
 
     def set_live(self, specs: list[LiveEq]) -> None:
         self.live.set_specs(specs)

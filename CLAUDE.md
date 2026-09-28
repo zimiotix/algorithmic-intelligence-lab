@@ -8,8 +8,8 @@
   App window check: `AILAB_CAPTURE=out.png,<secs>[,<tab>[,<section>]] uv run ailab --no-boot --chapter <id>`.
 - Equations shown in `advanced.md` must match the code and have a test in the chapter's `tests/`.
 - Generated artefacts (thumbnails, equation SVGs, videos) go to `~/.cache/ailab` or are gitignored.
-- Lab kit per chapter: `TOOLS`, `EXPERIMENTS` (+ `check` methods), `LIVE_MATH` (+ `terms`
-  and `live_math()`), `reality` and `[glossary]` in chapter.toml. The contract tests
+- Lab kit per chapter: `TOOLS`, `EXPERIMENTS` (+ `check` methods), `LEGEND` (colour key),
+  `LIVE_MATH` (+ `terms` and `live_math()`), `reality` and `[glossary]` in chapter.toml. The contract tests
   enforce them, and every `Param` needs a `help` text (it is the hover card).
 - `PARAMS` grouped with `section(...)`, plus `PRESETS`; no magic constants in kernels
   (a behaviour-shaping number is a `Param`). The contract test checks presets.

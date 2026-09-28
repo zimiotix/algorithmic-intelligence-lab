@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .params import Experiment, LiveEq, LiveValue, Overlay, Param, Preset, Tool, Values
+from .params import Experiment, LiveEq, LiveValue, Overlay, Param, Preset, Swatch, Tool, Values
 
 
 @dataclass
@@ -67,6 +67,7 @@ class Simulation:
     TOOLS: list[Tool] = []              # hotbar; the first one is active at start
     EXPERIMENTS: list[Experiment] = []  # guided things to try, shown in the Guide
     LIVE_MATH: list[LiveEq] = []        # equations evaluated live for the focus agent
+    LEGEND: list[Swatch] = []           # colour key: what each colour on screen means
 
     def __init__(self, ctx: SimContext):
         self.ctx = ctx

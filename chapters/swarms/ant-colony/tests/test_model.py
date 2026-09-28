@@ -349,3 +349,72 @@ def test_the_colony_chooses_the_richer_food():
     eaten = before - sim.food.numpy()
     share = eaten[rich].sum() / max(eaten.sum(), 1)
     assert eaten.sum() > 0 and share > 0.7, f"rich share {share:.2f}"
+
+
+# ------------------------------------------------------------------ colony store
+def test_store_fills_with_loads_and_empties_at_the_colony_appetite():
+    # S <- max(S + loads - N e / 60 * dt, 0); H = max(0, 1 - S / S_full)
+    sim = load_sim_class(INFO)(SimContext("cpu", 1))
+    sim.apply_values({"store0": 100.0, "appetite": 0.6, "full": 400.0})
+    n, dev = len(sim.pos), sim.device
+    sim.delivered = wp.array([30], dtype=int, device=dev)       # 30 loads just came home
+    sim.pos = wp.array(np.tile(np.float32([5.0, 5.0]), (n, 1)), dtype=wp.vec2, device=dev)
+    sim.advance(InputState())                                    # (ants parked in a corner)
+    store, hunger = sim.colony.numpy()
+    expected = 100 + 30 - n * 0.6 / 60 * sim.dt
+    assert np.isclose(store, expected, rtol=1e-5)
+    assert np.isclose(hunger, 1 - expected / 400, rtol=1e-5)
+    sim.colony = wp.array([0.0, 0.0], dtype=float, device=dev)
+    sim.advance(InputState())
+    assert tuple(sim.colony.numpy()) == (0.0, 1.0)              # never below empty
+
+
+def _hungry_test_colony(hunger: float, **values):
+    sim = load_sim_class(INFO)(SimContext("cpu", 6))
+    sim.apply_values({"variety": 0.0, "deposit": 0.0, "food_cue": 0.0, "nest_cue": 0.0,
+                      "trips": False, "hug_time": 0.0, "appetite": 0.0, **values})
+    sim.set_param("full", 100.0)
+    sim.colony = wp.array([100.0 * (1 - hunger), hunger], dtype=float, device=sim.device)
+    return sim
+
+
+def test_a_hungry_colony_s_searchers_wander_more():
+    # sigma_search = sigma_i (1 + k_r H): the spread of random turns grows by (1 + k_r)
+    spread = []
+    for hunger in (0.0, 1.0):
+        sim = _hungry_test_colony(hunger, wander=1.0, restless=1.5)
+        a0 = sim.ang.numpy().copy()
+        sim.advance(InputState())
+        spread.append(np.std(sim.ang.numpy() - a0))
+    assert np.isclose(spread[1] / spread[0], 2.5, rtol=0.1)
+
+
+def test_a_hungry_colony_s_loaded_ants_rush_home():
+    # h_loaded = h + k_d H: the turn toward home grows with the colony's hunger
+    turns = []
+    for hunger in (0.0, 1.0):
+        sim = _hungry_test_colony(hunger, wander=0.0, homing=0.5, desperate=1.0)
+        n, dev = len(sim.pos), sim.device
+        at = np.asarray(sim.nest) + np.array([0.0, 30.0])
+        sim.pos = wp.array(np.tile(at.astype(np.float32), (n, 1)), dtype=wp.vec2, device=dev)
+        sim.ang = wp.zeros(n, dtype=float, device=dev)            # nest 90 degrees to the right
+        sim.carry = wp.ones(n, dtype=int, device=dev)
+        sim.advance(InputState())
+        turns.append(float(-sim.ang.numpy().mean()))
+    p = sim.p
+    for hunger, turn in zip((0.0, 1.0), turns, strict=True):
+        assert np.isclose(turn, p.turn_rate * (0.5 + 1.0 * hunger) * sim.dt, rtol=0.02)
+
+
+def test_new_food_grows_on_free_ground_away_from_the_nest():
+    sim = load_sim_class(INFO)(SimContext("cpu", 2))
+    sim.apply_values({"regrow": 5.0})
+    before = sim.food.numpy() > 0
+    for _ in range(int(5.0 * 60) + 1):
+        sim.advance(InputState())
+    new = (sim.food.numpy() > 0) & ~before
+    assert new.sum() > 20
+    assert not (new & (sim.rocks.mask == 1)).any()
+    iy, ix = np.nonzero(new)
+    d = np.hypot((ix + 0.5) * 0.5 - sim.nest[0], (iy + 0.5) * 0.5 - sim.nest[1])
+    assert d.min() > 25

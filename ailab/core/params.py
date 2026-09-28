@@ -60,6 +60,16 @@ class Overlay:
     help: str = ""
 
 
+@dataclass(frozen=True)
+class Swatch:
+    """One line of a chapter's colour key: what a colour on screen means. `shape` is how
+    it appears: "dot" (agents, things), "glow" (fields and trails) or "ring"."""
+
+    color: str
+    label: str
+    shape: str = "dot"
+
+
 class Values:
     """Attribute access to current values: ``self.p.speed``."""
 

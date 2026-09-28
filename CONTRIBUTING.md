@@ -29,6 +29,8 @@ uv run tools/new_chapter.py <track> <slug> "Title"
      when possible, a `check` method that ticks it off automatically;
    - optionally `follow()`: return `(x, y, heading, zoom)` to get a chase camera that
      turns with an agent (keyboard controls then match the screen);
+   - `LEGEND`: a colour key (`Swatch(color, label, shape)`), shown in the Guide, so
+     every colour on screen has a meaning the learner can look up;
    - `LIVE_MATH` + `live_math()`: the key equations with the focus agent's numbers
      plugged in. Give each `LiveEq` its `terms` ("v: speed · a_b: braking"), so the
      symbols are defined before the equation is shown;

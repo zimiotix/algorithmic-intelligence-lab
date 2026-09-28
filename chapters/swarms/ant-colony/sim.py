@@ -26,6 +26,7 @@ from ailab.core import (
     Param,
     Preset,
     Simulation,
+    Swatch,
     Tool,
     section,
 )
@@ -97,6 +98,9 @@ class Trips:
     on: int              # limited trips: an ant must come home to eat and rest
     trip: float          # out this long: hungry and tired, it heads home
     rest: float          # how long it rests in the nest before going out again
+    store_on: int        # the nest keeps a food store; its hunger changes behaviour
+    restless: float      # a hungry colony's searchers wander up to (1 + this) times more
+    desperate: float     # ...and its loaded ants pull this much harder toward home
 
 
 @wp.func
@@ -140,11 +144,15 @@ def ant_step(P: Colony, M: Marks, T: Trips, g: Grid2D,
              rescued: wp.array(dtype=int), hug: wp.array(dtype=float),
              lost_clock: wp.array(dtype=float), traits: wp.array(dtype=wp.vec4),
              hit_d: wp.array(dtype=float), frust: wp.array(dtype=float),
-             carried_q: wp.array(dtype=float), away: wp.array(dtype=float)):
+             carried_q: wp.array(dtype=float), away: wp.array(dtype=float),
+             colony: wp.array(dtype=float)):
     i = wp.tid()
     p = pos[i]
     a = ang[i]
     rng = wp.rand_init(P.seed, i)
+    hunger = float(0.0)       # the colony's hunger H: 0 (store full) .. 1 (store empty)
+    if T.store_on == 1:
+        hunger = colony[1]
     aw = away[i]              # seconds since it left the nest; < 0: resting in the nest
     if aw < 0.0:
         aw = aw + P.dt
@@ -213,7 +221,7 @@ def ant_step(P: Colony, M: Marks, T: Trips, g: Grid2D,
         w = w * wp.exp(-P.dt / P.wind_tau) + turn * P.turn_rate * P.dt
         # path integration: loaded ants also feel the direction home (breaks "ant mills")
         if c == 1:
-            turn = turn + P.homing * home_err
+            turn = turn + (P.homing + T.desperate * hunger) * home_err   # desperate
         # lost: a loaded ant circling (an ant mill), or any ant out far too long
         circling = c == 1 and wp.abs(w) > 6.28318531 * P.nav_loops
         if P.nav_on == 1 and nv == 0.0 and (circling or lc > P.give_up):
@@ -235,7 +243,10 @@ def ant_step(P: Colony, M: Marks, T: Trips, g: Grid2D,
             hg = -P.hug_time                      # let go, and don't grab a wall for a while
     elif hg < 0.0:
         hg = wp.min(hg + P.dt, 0.0)
-    a = a + turn * P.turn_rate * P.dt + (wp.randf(rng) - 0.5) * 2.0 * P.wander * tr[1] * wp.sqrt(P.dt)
+    sigma = P.wander * tr[1]
+    if c == 0:
+        sigma = sigma * (1.0 + T.restless * hunger)   # a hungry colony's searchers roam
+    a = a + turn * P.turn_rate * P.dt + (wp.randf(rng) - 0.5) * 2.0 * sigma * wp.sqrt(P.dt)
 
     # 4. act: move; at a wall, turn away from your wall side just enough to slide along it
     step = heading(a) * (v * P.dt)
@@ -311,6 +322,18 @@ def ant_step(P: Colony, M: Marks, T: Trips, g: Grid2D,
     hit_d[i] = hd
     frust[i] = fr
     away[i] = aw
+
+
+@wp.kernel
+def colony_tick(delivered: wp.array(dtype=int), seen: wp.array(dtype=int),
+                colony: wp.array(dtype=float), appetite: float, full: float, dt: float):
+    # one thread: loads brought home fill the store, the colony eats from it, and its
+    # hunger is how empty the store is. colony = [store, hunger]
+    d = delivered[0] - seen[0]
+    seen[0] = delivered[0]
+    s = wp.max(colony[0] + float(d) - appetite * dt, 0.0)
+    colony[0] = s
+    colony[1] = wp.clamp(1.0 - s / wp.max(full, 1.0e-6), 0.0, 1.0)
 
 
 @wp.kernel
@@ -560,7 +583,30 @@ class Sim(Simulation):
                   "frustration.", "S_{trail}"),
         ),
         *section(
+            "Colony store",
+            Param("store_on", "Food store", True,
+                  help="Food brought home goes into the nest's store, and the colony eats from "
+                       "it. As the store runs low the colony gets hungry: searchers roam "
+                       "wider, and ants with food rush home."),
+            Param("store0", "Starting store", 300.0, 0.0, 3000.0, 10.0,
+                  "Food in the store at the start.", "S_0", restart=True),
+            Param("appetite", "Each ant eats", 0.2, 0.0, 3.0, 0.05,
+                  "Food each ant eats from the store per minute (for itself, the brood and "
+                  "the queen). The colony eats N times this.", "e", "/min"),
+            Param("full", "Store feels full at", 300.0, 10.0, 3000.0, 10.0,
+                  "Below this the colony starts to feel hungry. Empty store: fully hungry.",
+                  "S_{full}"),
+            Param("restless", "Restlessness", 1.5, 0.0, 5.0, 0.1,
+                  "How much more a hungry colony's searchers wander: up to (1 + k_r) times.",
+                  "k_r"),
+            Param("desperate", "Desperation", 1.0, 0.0, 3.0, 0.05,
+                  "How much harder a hungry colony's loaded ants steer for home.", "k_d"),
+        ),
+        *section(
             "Food",
+            Param("regrow", "New food every", 0.0, 0.0, 300.0, 5.0,
+                  "A new food pile appears somewhere this often. 0: never, the food that is "
+                  "there is all there will be.", "T_{grow}", "s"),
             Param("rich", "Rich food quality", 2.5, 1.0, 5.0, 0.1,
                   "How much more strongly ants mark the trail from rich food than from "
                   "ordinary food (quality 1). Used by Two foods and the Rich food tool.",
@@ -572,10 +618,15 @@ class Sim(Simulation):
         Preset("bridge", "Double bridge", {"scenario": "Double bridge"},
                "Two routes to food, one shorter. Watch the colony pick one."),
         Preset("maze", "Maze", {"scenario": "Maze", "homing": 0.0, "trail_tau": 40.0,
-                                "evap_tau": 80.0, "hug_time": 8.0, "navigators": True},
+                                "evap_tau": 80.0, "hug_time": 8.0, "navigators": True,
+                                "store_on": False},
                "Food at the far end of a maze. Longer memories for a long route, walls "
                "followed longer, no compass pulling ants into walls, and ants that give "
                "up a fruitless search and head home (violet)."),
+        Preset("hungry", "Hungry colony",
+               {"store0": 60.0, "appetite": 1.0, "regrow": 40.0},
+               "A small store and a big appetite: watch the store run out, searchers roam "
+               "wide, and ants with food rush home. New food appears every 40 s."),
         Preset("forget", "Fast fading", {"evap_tau": 6.0},
                "Trails vanish quickly: the colony struggles to settle on a route."),
         Preset("stubborn", "Long memory", {"evap_tau": 300.0},
@@ -600,6 +651,22 @@ class Sim(Simulation):
         Overlay("sensors", "Focus ant sensors", True, "What the focus ant smells."),
         Overlay("memory", "Ant memory", False, "Tint ants by time since they left home/food."),
         Overlay("ants", "Ants", True),
+    ]
+    LEGEND = [
+        Swatch("#a0522d", "Ant looking for food"),
+        Swatch("#86efac", "Green dot at its head: carrying food"),
+        Swatch(NAV_COLOR, "Violet ant: walking home by compass (hungry, or lost)"),
+        Swatch("#4a7dff", "Blue glow: home trail, laid by ants looking for food", "glow"),
+        Swatch("#e8902a", "Orange glow: food trail, laid by ants carrying food. Where both "
+                          "trails overlap they blend to violet and white", "glow"),
+        Swatch("#ff2e38", "Red glow: no-entry marks (dead ends)", "glow"),
+        Swatch("#bef264", "Green seeds: food"),
+        Swatch(RICH_COLOR, "Gold seeds: rich food"),
+        Swatch("#57504a", "Grey: rock and walls"),
+        Swatch(pal.AMBER, "Nest. It fills up as the colony's food store grows", "ring"),
+        Swatch("#ef4444", "Red glow round the nest: the colony is hungry", "glow"),
+        Swatch("#ffffff", "White ring: the ant you follow (Inspect, 4)", "ring"),
+        Swatch(pal.SKY, "Its three smell sensors; the green one smells strongest", "ring"),
     ]
     TOOLS = [
         Tool("wall", "Wall", "wall", "Drag to build walls", "Drag to erase walls", radius=1.6,
@@ -701,6 +768,12 @@ class Sim(Simulation):
                r"f_i = e^{\kappa z_3}",
                "v_i, σ_i: its own speed and wander · f_i: how loyally it follows trails · "
                "κ: individual variety · z: its random draws, fixed at birth"),
+        LiveEq("colony", "How hungry is the colony?",
+               r"H = \max\!\big(0,\, 1 - S/S_{full}\big),\;\; "
+               r"\sigma_{search} = \sigma_i\,(1 + k_r H),\;\; h_{loaded} = h + k_d H",
+               "H: colony hunger, 0 fed to 1 starving · S: food in the store · S_full: a store "
+               "that feels full · σ_i: its wander · k_r: restlessness · h: path integration · "
+               "k_d: desperation"),
         LiveEq("trip", "Time to go home?",
                r"t_{out} > T_{trip} \;\Rightarrow\; \text{home by compass, rest } T_{rest}",
                "t_out: time since it last left the nest · T_trip: how long it can stay out · "
@@ -750,6 +823,9 @@ class Sim(Simulation):
         self.frust = wp.zeros(n, dtype=float, device=dev)
         self.carried_q = wp.ones(n, dtype=float, device=dev)
         self.away = wp.zeros(n, dtype=float, device=dev)
+        self.colony = wp.array([self.p.store0, 0.0], dtype=float, device=dev)   # store, H
+        self.seen = wp.zeros(1, dtype=int, device=dev)
+        self.grow_rng = np.random.default_rng([seed, 7])   # where new food appears
         # personalities: speed, wander and trail loyalty factors e^(kappa z), z ~ N(0, 1)
         # (kappa = 0: identical ants), and which side each keeps a wall on
         k = float(self.p.variety)
@@ -797,6 +873,8 @@ class Sim(Simulation):
         p, t = self.p, Trips()
         t.on = 1 if p.trips else 0
         t.trip, t.rest = p.trip, p.rest
+        t.store_on = 1 if p.store_on else 0
+        t.restless, t.desperate = p.restless, p.desperate
         return t
 
     def _marks(self) -> Marks:
@@ -849,13 +927,35 @@ class Sim(Simulation):
                           f.value, f.deposit, self.food, self.rocks.blocked, self.claims,
                           self.delivered, self.wind, self.nav, self.rescued, self.hug,
                           self.lost_clock, self.traits, self.hit_d, self.frust,
-                          self.carried_q, self.away], device=dev)
+                          self.carried_q, self.away, self.colony], device=dev)
         wp.launch(ant_pickup, dim=len(self.pos),
                   inputs=[g, self.pos, self.ang, self.carry, self.timer, self.lost_clock,
                           self.nav, self.frust, self.carried_q, self.food, self.quality,
                           self.claims], device=dev)
+        p = self.p
+        if p.store_on:
+            wp.launch(colony_tick, dim=1, inputs=[self.delivered, self.seen, self.colony,
+                                                 p.appetite * len(self.pos) / 60.0, p.full,
+                                                 self.dt], device=dev)
+        if p.regrow > 0 and self.steps > 0 and self.steps % max(int(round(p.regrow / self.dt)), 1) == 0:
+            self._grow_food()
         f.update(self.dt)
         self._host = None
+
+    def _grow_food(self) -> None:
+        """A new pile at a seeded random free spot away from the nest."""
+        for _ in range(50):
+            at = self.grow_rng.uniform([10, 8], [WIDTH - 10, HEIGHT - 8])
+            if np.hypot(*(at - self.nest)) < 30 or not self.rocks.free(at):
+                continue
+            disk = self.rocks.capsule(at, at, 3.0) & (self.rocks.mask == 0)
+            food = self.food.numpy()
+            food[disk] += 8
+            self.quality_np[disk] = 1.0
+            self.food_total += int(8 * disk.sum())
+            self.food = wp.array(food, dtype=int, device=self.device)
+            self.quality = wp.array(self.quality_np, dtype=float, device=self.device)
+            return
 
     def _fetch(self):
         if self._host is None:
@@ -866,14 +966,15 @@ class Sim(Simulation):
                               wind=self.wind.numpy(), nav=self.nav.numpy(),
                               hug=self.hug.numpy(), lost=self.lost_clock.numpy(),
                               frust=self.frust.numpy(), cq=self.carried_q.numpy(),
-                              away=self.away.numpy(),
+                              away=self.away.numpy(), colony=self.colony.numpy(),
                               rescued=int(self.rescued.numpy()[0]))
         return self._host
 
     def state_arrays(self):
         h = self._fetch()
         return [h["pos"], h["ang"], h["carry"], h["field"], h["food"], h["nav"], h["hug"],
-                h["lost"], h["frust"], h["cq"], h["away"], self.trait_np, self.quality_np, self.rocks.mask]
+                h["lost"], h["frust"], h["cq"], h["away"], h["colony"], self.trait_np,
+                self.quality_np, self.rocks.mask]
 
     # ------------------------------------------------------------------ draw
     def draw(self, s) -> None:
@@ -915,7 +1016,16 @@ class Sim(Simulation):
         s.image(self._rock_img, b, mode="mask")
         s.glow(self.nest, 7.0, pal.rgba(pal.AMBER, 0.25, 1.2))
         s.circles(self.nest, 3.0, pal.rgba("#0b0704"))
-        s.circles(self.nest, 3.0, pal.rgba(pal.AMBER, 0.9, 1.5), ring=0.35)
+        ring = pal.AMBER
+        if self.p.store_on:                         # the store fills the nest; hunger reddens it
+            store, hunger = h["colony"]
+            fill = min(store / max(self.p.full, 1e-6), 1.0)
+            if fill > 0:
+                s.circles(self.nest, 2.6 * np.sqrt(fill), pal.rgba(pal.AMBER, 0.55, 1.1))
+            if hunger > 0:
+                ring = tuple(pal.lerp_colors(pal.AMBER, "#ef4444", [hunger])[0][:3])
+                s.glow(self.nest, 5.0 + 5.0 * hunger, pal.rgba("#ef4444", 0.3 * hunger, 1.2))
+        s.circles(self.nest, 3.0, pal.rgba(ring, 0.9, 1.5), ring=0.35)
 
         if self.show.ants:
             dt_vis = self.dt
@@ -984,6 +1094,9 @@ class Sim(Simulation):
             HudItem("ants", f"{len(carry):,}"),
             HudItem("carrying food", f"{100 * carry.mean():.0f}%"),
             HudItem("delivered", f"{h['delivered']:,}", accent=True),
+            *([HudItem("colony store", f"{h['colony'][0]:,.0f}"),
+               HudItem("colony hunger", f"{100 * h['colony'][1]:.0f}%")]
+              if self.p.store_on else []),
             HudItem("following walls", f"{100 * (h['hug'] > 0).mean():.0f}%"),
             *([HudItem("hungry, going home", f"{int((h['away'] > self.p.trip).sum()):,}"),
                HudItem("resting in the nest", f"{int((h['away'] < 0).sum()):,}")]
@@ -1022,6 +1135,18 @@ class Sim(Simulation):
         to = self.nest - p
         err = float(np.arctan2(np.sin(np.arctan2(to[1], to[0]) - a),
                                np.cos(np.arctan2(to[1], to[0]) - a)))
+        store, hunger = (float(x) for x in h["colony"])
+        if not P.store_on:
+            out["colony"] = LiveValue("no food store (switch on Food store)", None,
+                                      "the colony never goes hungry")
+        else:
+            now = (f"σ = {fmt(P.wander * self.trait_np[f][1] * (1 + P.restless * hunger))}"
+                   if not c else f"h = {fmt(P.homing + P.desperate * hunger)}")
+            out["colony"] = LiveValue(f"S = {store:,.0f} of {P.full:,.0f} → H = {fmt(hunger)} "
+                                      f"→ {now}", hunger < 0.5,
+                                      "well fed: business as usual" if hunger == 0 else
+                                      ("hungry: searchers roam wider" if not c else
+                                       "hungry: rushing home with food"))
         nav = float(h["nav"][f])
         aw = float(h["away"][f])
         tired = P.trips and aw > P.trip

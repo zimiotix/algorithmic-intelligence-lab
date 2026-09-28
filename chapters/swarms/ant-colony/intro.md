@@ -45,6 +45,11 @@ marks left in the environment.
 > walks home (violet), eats and rests in the nest, and goes out again. Switch off *Ants get
 > hungry* and watch lost ants, and ants circling rocks with food, never come back.
 
+> **A hungry colony.** Pick the **Hungry colony** preset. The nest fills with the food store
+> and turns red when it runs low. Watch the searchers roam wider and ants with food rush
+> home, and new food appear every 40 s. The **Colours** panel on the left says what every
+> colour means.
+
 > **Make an ant mill.** Pick the **Ant mill** preset (no sense of direction home, no
 > hunger). Sometimes ants start following each other in a circle forever. Real army ants
 > do this too. Then try **Mill rescue**: ants that notice they keep circling turn navigator
