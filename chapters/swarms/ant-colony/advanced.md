@@ -4,7 +4,7 @@
 
 1. **Sense.** Smell at three points ahead: left, front, right.
 2. **Decide.** Turn toward the strongest smell, plus a little random wiggle.
-3. **Act.** Step forward, or turn around at a wall.
+3. **Act.** Step forward; at a wall, slide along it and keep it at one side.
 4. **Mark.** Drop pheromone. The longer it has been since the ant left the nest (or found
    food), the weaker the mark, because a long walk means a worse route.
 
@@ -54,13 +54,21 @@ Walls use a *no-flux* boundary: a blocked neighbour counts as having the same va
 
 ## What an ant deposits
 
-An ant that left its source $t_a$ seconds ago deposits, per step,
+An ant that left its source $t_a$ seconds ago deposits, per step, an amount set by the
+pheromone rate $q$ and, for an ant carrying food, the food's **quality** $Q$ (1 for
+ordinary food, $Q_{rich}$ for rich food; searchers always use $Q = 1$):
 
 $$
-\Delta c = q\, e^{-t_a/\tau_a}\, \Delta t
+\Delta c = q\,Q\, e^{-t_a/\tau_a}\, \Delta t
 $$
 
 so a trail's strength is effectively a *countdown of distance*: stronger near the source.
+And better food gets a stronger trail. *Lasius niger* workers lay more trail for richer
+sugar (Beckers, Deneubourg and Goss, 1993). In the **Two foods** scenario the nest's
+corridor forks into two equal branches: with equal food the colony still settles on one
+branch at random (symmetry breaking, as on the double bridge), and with one richer pile it
+picks the rich one. We measured 87% of the food taken from the rich branch, on every one
+of eight seeds. No ant ever compares the two piles.
 
 ## The steering rule
 
@@ -81,18 +89,88 @@ S = \ln\!\Big(1 + \sum_{3\times3} c\Big) + \text{cues},
 \end{cases}
 $$
 
-The ant's heading $\theta$ then turns at the turn rate $\omega$. A loaded ant also feels
-the direction of the nest $\theta_{nest}$ with strength $h$ ($[\text{loaded}]$ is 1 when it
-carries food, else 0). Finally it wanders by $\sigma$ times a seeded random number $\xi$
-between $-1$ and $1$:
+The ant's heading $\theta$ then turns at the turn rate $\omega$. How much a smell pulls
+depends on the ant's **trail loyalty** $f_i$ (its personality, below). A loaded ant also
+feels the direction of the nest $\theta_{nest}$ with strength $h$ ($[\text{loaded}]$ is 1
+when it carries food, else 0). Finally it wanders by its own wander strength $\sigma_i$
+times a seeded random number $\xi$ between $-1$ and $1$:
 
 $$
-\theta \leftarrow \theta + \omega\Delta t\,\Big(\sigma_{turn} + h\,[\text{loaded}]\,\sin(\theta_{nest} - \theta)\Big) + \sigma\sqrt{\Delta t}\;\xi,
+\theta \leftarrow \theta + \omega\Delta t\,\Big(f_i\,\sigma_{turn} + h\,[\text{loaded}]\,\sin(\theta_{nest} - \theta)\Big) + \sigma_i\sqrt{\Delta t}\;\xi,
 \qquad \xi \sim U(-1, 1)
 $$
 
 The $\sqrt{\Delta t}$ makes the random walk independent of the step size (it is a discrete
 Brownian motion), and $h$ is the path-integration weight.
+
+## No two ants alike
+
+Real workers differ: some are bold, fast explorers, others stick faithfully to trails.
+When the colony is created, each ant $i$ draws three random numbers $z_1, z_2, z_3$ from a
+standard normal distribution (average 0, spread 1), once, from the seed. With the
+*individual variety* $\kappa$, they set its walking speed $v_i$, its wander $\sigma_i$ and
+its trail loyalty $f_i$ around the colony's values $v$ and $\sigma$:
+
+$$
+v_i = v\,e^{\kappa z_1}, \qquad \sigma_i = \sigma\,e^{\kappa z_2}, \qquad f_i = e^{\kappa z_3}
+$$
+
+The exponential keeps every factor positive and makes "twice as fast" as likely as "half as
+fast". With $\kappa = 0$ every factor is 1: identical ants, the classic model. Each ant
+also gets a **wall side** $s_i$, $+1$ (left) or $-1$ (right) with equal chance.
+
+## Following walls
+
+An ant that bumps into a wall doesn't turn around. It turns away from its wall side in
+small steps $\Delta_w$ until the way along the wall is free, and slides along it. From then
+on it keeps the wall at its side (**thigmotaxis**; real ants do this, and in *Lasius niger*
+the habit even spreads socially). A side feeler at angle $\alpha_w$ and reach $d_w$ checks
+the wall is still there:
+
+$$
+\text{wall at } \mathbf{x} + d_w\,\hat{\mathbf{u}}(\theta + s_i\,\alpha_w)
+\;\Rightarrow\; \text{keep following};\qquad
+\text{otherwise}\;\; \theta \leftarrow \theta + \omega\Delta t\; s_i\, g_w
+$$
+
+where $\hat{\mathbf{u}}(\phi)$ is the unit vector pointing at angle $\phi$. If the wall
+disappears (an outside corner), the ant turns back toward it with corner pull $g_w$, for up
+to $T_w$ seconds. To avoid circling a pillar forever it lets go at random, with rate
+$\lambda_w$ per second, so the chance of letting go during one step is
+$1 - e^{-\lambda_w \Delta t}$.
+
+**Why this solves mazes.** The Maze scenario is carved by a randomised depth-first search,
+which makes a *perfect maze*: exactly one route between any two places, and no loops. Its
+free space is one tree-shaped region, so all its walls form one single, unbroken wall. An
+ant that never lets go of that wall walks along all of it and therefore passes every
+corridor, including the food and, afterwards, the nest. This is the classic *hand-on-wall*
+rule, and the chapter's tests check it in its pure form (no letting go, no smells, no
+wander). Real ants, and ours by default, let go and follow smells too, so the guarantee
+becomes a strong tendency rather than a proof. That mix is what makes the colony both
+thorough and fast. Drawing your own walls can add loops, which is where the rule can fail.
+
+## "No entry": the colony learns from failure
+
+A trail can mislead. Ants that took a wrong turn with food mark a side corridor, and
+searchers then follow that scent into a dead end, again and again. Pharaoh's ants solve
+this with a second, *repellent* pheromone: a "no entry" mark near branches that don't pay
+off (Robinson, Jackson, Holcombe and Ratnieks, 2005).
+
+Here, each searching ant counts how long it has been following a food trail (its reading
+$\ln(1 + c)$ at its own position is above $S_{trail}$) without finding food. After $T_f$
+seconds of this frustration it lays a "no entry" mark $n$ at rate $q_{ne}$ wherever it is
+still on the trail, until it finds food or gets home. The marks live in their own layer
+of the ground, fade faster than trails (over $\tau_{ne}$), and lower what a searcher's
+sensors read:
+
+$$
+S = \ln\!\Big(1 + \sum_{3\times3} c\Big) - k_{ne}\,\ln\!\Big(1 + \sum_{3\times3} n\Big) + \text{cues}
+$$
+
+with $k_{ne}$ the no-entry strength. A marked stretch of trail smells weaker than the
+unmarked way, so searchers stop following it there. In our open field, where piles run out
+and old trails keep pointing at empty places, the marks lifted deliveries by about 40%. In
+the Maze the difference was within the noise.
 
 ## Navigator ants: noticing you are lost
 
@@ -102,27 +180,55 @@ mill cannot see its shape. What it *can* notice is its own turning: on a normal 
 and right turns cancel out, but in a mill it keeps turning the same way.
 
 So each ant keeps a running total $W$ of its recent steering, in radians, where older
-turning fades away over the turning memory $\tau_w$. Each step adds the turn it chose,
-$\omega\Delta t$ times the bracket in the steering rule above (the random wander is left
-out, so chance wiggles don't count):
+turning fades away over the turning memory $\tau_w$. Each step adds only the turn its
+*smells* chose. A mill is ants following each other's trail round and round, so the pull
+toward home, the random wander and wall following are left out; none of them count as
+circling:
 
 $$
-W \leftarrow W\,e^{-\Delta t/\tau_w} + \omega\Delta t\,\Big(\sigma_{turn} + h\,[\text{loaded}]\,\sin(\theta_{nest} - \theta)\Big)
+W \leftarrow W\,e^{-\Delta t/\tau_w} + \omega\Delta t\; f_i\,\sigma_{turn}
 $$
 
-One full circle is $2\pi$ radians. When the ant has turned more than $n_{lost}$ circles
-the same way, it decides it is lost and becomes a **navigator** for $T_n$ seconds:
+It also counts $t_{lost}$, the time since it last reached home or food, not counting time
+spent following a wall. One full circle is $2\pi$ radians. An ant *carrying food* that has
+turned more than $n_{lost}$ circles (mills are made of loaded ants), or *any* ant that has
+been out longer than $T_{lost}$ (real foragers give up a fruitless search), decides it is
+lost:
 
 $$
-|W| > 2\pi\,n_{lost} \quad\Longrightarrow\quad
-\theta \leftarrow \theta + \omega\Delta t\; g_n \sin(\theta_{nest} - \theta) + \sigma\sqrt{\Delta t}\;\xi
+|W| > 2\pi\,n_{lost} \;\vee\; t_{lost} > T_{lost}
 $$
 
-A navigator ignores smells and steers home by its compass with strength $g_n$, and it
-lays no pheromone, so it stops feeding the loop. At the nest (or after $T_n$ seconds, in
-case a wall stands between it and home) it becomes an ordinary ant again. Real desert ants
-(*Cataglyphis*) really do navigate home by such a path-integration compass; the
-"I am circling" trigger is this Lab's invention, one simple way to escape a loop.
+It faces the nest and becomes a **navigator** for up to $T_n$ seconds. A navigator stops
+trusting smells: a trail can lead into a dead end (we saw lost ants pace up and down a side
+corridor that wrong-way ants had scented). Instead it runs the **Bug algorithm**, a classic
+of robot navigation (Lumelsky and Stepanov, 1987):
+
+1. Head for home by compass, turning with strength $g_n$:
+$$
+\theta \leftarrow \theta + \omega\Delta t\; g_n \sin(\theta_{nest} - \theta) + \sigma_i\sqrt{\Delta t}\;\xi
+$$
+2. When a wall blocks the way, follow it (keeping it on side $s_i$, never letting go) and
+   remember $d_{hit}$, the distance to home at the moment it met the wall.
+3. Leave the wall when the way home is clear *and* it is closer than that:
+$$
+\text{free toward home} \;\wedge\; \lVert \mathbf{x}_{nest} - \mathbf{x} \rVert < d_{hit}
+$$
+
+Each wall is left closer to home than it was met, so the ant can't go round in a loop: it
+keeps making progress until it arrives. A navigator lays no pheromone, so it stops feeding
+a mill. At the nest, or at food, it becomes an ordinary ant again. After $T_n$ seconds it
+trusts smells again for another $T_n$ seconds before it may retry.
+
+**What we measured** (1,500 ants, four seeds, two to five minutes per run). In the Maze,
+navigators roughly doubled deliveries, and with the Maze preset 99.9% of ants found food or
+got home within ten minutes. But in the Two foods fork they cost about a sixth of the
+deliveries: ants circling the round food rooms turn navigator and stop laying trail on the
+way home. So navigators are **off by default** and switched on by the Maze and Mill rescue
+presets, where getting lost is the real problem. Our first version, which backtracked
+along the home trail, did worse than no navigators at all, because trails trapped the
+navigators too. Real desert ants (*Cataglyphis*) do navigate home by a path-integration
+compass; the "am I circling?" and Bug-algorithm rules are this Lab's inventions.
 
 ## The binary choice model
 

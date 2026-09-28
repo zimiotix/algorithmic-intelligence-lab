@@ -31,6 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--frames", type=int, default=300)
     ap.add_argument("--size", default="1600x900")
     ap.add_argument("--no-boot", action="store_true", help="skip the system check screen")
+    ap.add_argument("--seed", type=int, metavar="N",
+                    help="start with this seed (default: a fresh random seed each launch)")
     args = ap.parse_args(argv)
     # Windows consoles/pipes may not be UTF-8: never crash on "·" or "→" in the report.
     for stream in (sys.stdout, sys.stderr):
@@ -67,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         dev = compute.init(device, info)
         w, h = (int(v) for v in args.size.split("x"))
         print(snapshot(discover().chapters[args.chapter], args.snapshot, dev, args.frames,
-                       (w, h)))
+                       (w, h), seed=1 if args.seed is None else args.seed))
         return 0
 
     compute.init(device, info)
@@ -81,7 +83,8 @@ def main(argv: list[str] | None = None) -> int:
                   "python.exe in Settings → Display → Graphics.", flush=True)
     from .app.main import run_app
 
-    return run_app(info, device, args.chapter or None, boot=not args.no_boot)
+    return run_app(info, device, args.chapter or None, boot=not args.no_boot,
+                   seed=args.seed)
 
 
 if __name__ == "__main__":

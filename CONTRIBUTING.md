@@ -52,9 +52,14 @@ uv run tools/new_chapter.py <track> <slug> "Title"
 
 - **Engine code is generic.** If a chapter needs something new (a sprite, a memory kind,
   an input), add it to `ailab/` so every chapter can use it.
-- **Determinism is not optional.** Use `np.random.default_rng(seed)` or
-  `wp.rand_init(seed, id)`. On the GPU: double-buffer state, and use integer atomics (or
-  `atomic_min` on ids) whenever order could matter.
+- **Determinism is not optional.** Use `np.random.default_rng(seed)` on the host. In
+  kernels use `wp.rand_init(step_seed(seed, step), id)` with `ailab.core.rng.step_seed`:
+  never `seed + step`, which makes agents replay each other's random numbers shifted in
+  time (`tests/test_rng.py` shows it). On the GPU: double-buffer state, and use integer
+  atomics (or `atomic_min` on ids) whenever order could matter.
+- **Keep Warp struct arguments small.** A parameter struct that grew past about 35 fields
+  crashed the ant kernel on CUDA (illegal memory access) while the CPU and debug builds were
+  fine. Split settings into several small structs (the ants use `Colony` and `Marks`).
 - **GPU only where it pays.** Hundreds of agents: numpy is fine and easier to read.
   Thousands and up: Warp kernels. The same Warp kernel runs on the CPU fallback.
 - **Warp kernels:** declare loop-mutated variables with constructors (`x = float(0.0)`,

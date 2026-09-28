@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from ..core import compute, paths, settings
 from ..core.catalog import Catalog, ChapterInfo, load_sim_class
+from ..core.rng import SEED_MAX, fresh_seed
 from ..core.sim import SimContext
 from ..core.system import SystemInfo
 from ..text.markdown import split_sections, symbol_table
@@ -327,9 +328,10 @@ class ChapterPage(QWidget):
     statusText = Signal(str)
     focusMode = Signal(bool)
 
-    def __init__(self, info: SystemInfo):
+    def __init__(self, info: SystemInfo, seed: int | None = None):
         super().__init__()
         self.sysinfo = info
+        self._start_seed = fresh_seed() if seed is None else seed   # a new run each launch
         self.chapter: ChapterInfo | None = None
         self.sim = None
         lay = QVBoxLayout(self)
@@ -520,13 +522,13 @@ class ChapterPage(QWidget):
         sl = QLabel("seed")
         sl.setProperty("role", "muted")
         self.seed = QSpinBox()
-        self.seed.setRange(0, 999_999)
-        self.seed.setValue(1)
-        self.seed.setToolTip("The only source of randomness. Same seed = same run.")
+        self.seed.setRange(0, SEED_MAX - 1)
+        self.seed.setValue(self._start_seed)
+        self.seed.setToolTip("The only source of randomness. Every launch picks a new one; "
+                             "type a seed back in to replay that exact run.")
         self.seed.editingFinished.connect(self.restart)
         dice = QPushButton("New seed")
-        dice.clicked.connect(lambda: (self.seed.setValue((self.seed.value() * 7919 + 17)
-                                                         % 1_000_000), self.restart()))
+        dice.clicked.connect(lambda: (self.seed.setValue(fresh_seed()), self.restart()))
         tl.addWidget(sl)
         tl.addWidget(self.seed)
         tl.addWidget(dice)
@@ -1250,7 +1252,7 @@ class SystemDialog(QDialog):
 
 # ================================================================== main window
 class MainWindow(QMainWindow):
-    def __init__(self, info: SystemInfo, catalog: Catalog):
+    def __init__(self, info: SystemInfo, catalog: Catalog, seed: int | None = None):
         super().__init__()
         self.info, self.catalog = info, catalog
         self.setWindowTitle("Algorithmic Intelligence Lab")
@@ -1265,7 +1267,7 @@ class MainWindow(QMainWindow):
         self.sidebar = Sidebar(catalog, info)
         self.pages = QStackedWidget()
         self.home = HomePage(catalog, info)
-        self.chapter = ChapterPage(info)
+        self.chapter = ChapterPage(info, seed)
         self.pages.addWidget(self.home)
         self.pages.addWidget(self.chapter)
         h.addWidget(self.sidebar)

@@ -77,12 +77,14 @@ def test_steady_turning_adds_up_to_omega_tau():
     w, dt, tau = sp.symbols("omega dt tau_w", positive=True)
     limit = w * dt / (1 - sp.exp(-dt / tau))
     assert sp.limit(limit, dt, 0) == w * tau
-    # so an ant stuck turning one way (omega = 8, tau_w = 3 -> 24 rad) is soon "lost" at
-    # 1.5 circles (9.4 rad), while a straight walk (no steering) never is
-    assert 8 * 3 > 2 * np.pi * 1.5
+    # so a loaded ant stuck turning one way (omega = 8, tau_w = 8 -> 64 rad, about ten
+    # circles) is soon "lost" at 4 circles (25 rad), while a straight walk never is
+    assert 8 * 8 > 2 * np.pi * 4
 
 
-def _lost_colony(navigators: bool):
+def _lost_colony(navigators: bool, how: str):
+    """Every ant 30 units from the nest, lost in one of two ways: 'circling' (carrying
+    food and turning round and round) or 'searching' (out far longer than T_lost)."""
     sim = load_sim_class(INFO)(SimContext("cpu", 4))
     sim.set_param("navigators", navigators)
     n = len(sim.pos)
@@ -91,25 +93,214 @@ def _lost_colony(navigators: bool):
                                                                             np.sin(a)]))
                 and 5 < q[0] < 155 and 5 < q[1] < 85)
     far = np.tile(spot, (n, 1)).astype(np.float32)
-    sim.pos = wp.array(far, dtype=wp.vec2, device=sim.device)
-    sim.wind = wp.array(np.full(n, 100.0, np.float32), dtype=float, device=sim.device)
+    dev = sim.device
+    sim.pos = wp.array(far, dtype=wp.vec2, device=dev)
+    if how == "circling":
+        sim.carry = wp.array(np.ones(n, np.int32), dtype=int, device=dev)
+        sim.wind = wp.array(np.full(n, 100.0, np.float32), dtype=float, device=dev)
+    else:
+        sim.lost_clock = wp.array(np.full(n, 1e4, np.float32), dtype=float, device=dev)
     return sim
 
 
 def test_lost_ants_navigate_home_and_lay_no_trail():
-    sim = _lost_colony(True)
-    d0 = np.linalg.norm(sim.pos.numpy() - sim.nest, axis=1).mean()
-    sim.advance(InputState())
-    assert (sim.nav.numpy() > 0).all()               # every circling ant turned navigator
-    assert sim.field.numpy().sum() == 0              # and none of them marked the ground
-    for _ in range(120):                             # two seconds of compass walking
+    for how in ("circling", "searching"):
+        sim = _lost_colony(True, how)
+        d0 = np.linalg.norm(sim.pos.numpy() - sim.nest, axis=1).mean()
         sim.advance(InputState())
-    d1 = np.linalg.norm(sim.pos.numpy() - sim.nest, axis=1).mean()
-    assert d1 < d0 - 10
+        assert (sim.nav.numpy() > 0).all(), how      # every lost ant turned navigator
+        assert sim.field.numpy().sum() == 0, how     # and none of them marked the ground
+        for _ in range(120):                         # two seconds of compass walking
+            sim.advance(InputState())
+        d1 = np.linalg.norm(sim.pos.numpy() - sim.nest, axis=1).mean()
+        assert d1 < d0 - 10, how
+
+
+def test_circling_only_counts_for_ants_carrying_food():
+    # a searching ant turning a lot is just searching; an ant mill is made of loaded ants
+    sim = _lost_colony(True, "circling")
+    sim.carry = wp.zeros(len(sim.pos), dtype=int, device=sim.device)
+    sim.advance(InputState())
+    assert (sim.nav.numpy() == 0).all()
 
 
 def test_navigators_can_be_switched_off():
-    sim = _lost_colony(False)
+    sim = _lost_colony(False, "circling")
     sim.advance(InputState())
     assert (sim.nav.numpy() == 0).all()
     assert sim.field.numpy().sum() > 0
+
+
+# ------------------------------------------------------------------ personalities
+def test_variety_zero_means_identical_ants():
+    sim = load_sim_class(INFO)(SimContext("cpu", 5))
+    sim.set_param("variety", 0.0)
+    t = sim.trait_np
+    assert (t[:, :3] == 1.0).all()
+    assert set(np.unique(t[:, 3])) == {-1.0, 1.0}      # wall sides still differ
+
+
+def test_personalities_are_seeded_and_centred_on_the_colony_values():
+    a = load_sim_class(INFO)(SimContext("cpu", 5)).trait_np
+    b = load_sim_class(INFO)(SimContext("cpu", 5)).trait_np
+    assert (a == b).all()
+    # e^(kappa z) with z ~ N(0, 1): the median factor is 1 (half faster, half slower)
+    assert abs(np.median(np.log(a[:, :3]))) < 0.05
+    assert a[:, :3].min() > 0
+
+
+# ------------------------------------------------------------------ walls and mazes
+def _free_components(mask: np.ndarray) -> int:
+    """Connected pieces of rock (4-neighbour flood fill)."""
+    seen = np.zeros_like(mask, bool)
+    pieces = 0
+    for y0, x0 in zip(*np.nonzero(mask), strict=True):
+        if seen[y0, x0]:
+            continue
+        pieces += 1
+        stack = [(y0, x0)]
+        seen[y0, x0] = True
+        while stack:
+            y, x = stack.pop()
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                v, u = y + dy, x + dx
+                if 0 <= v < mask.shape[0] and 0 <= u < mask.shape[1] and mask[v, u] \
+                        and not seen[v, u]:
+                    seen[v, u] = True
+                    stack.append((v, u))
+    return pieces
+
+
+def test_the_maze_has_one_unbroken_wall():
+    # A perfect maze (randomised depth-first carving: no loops) is one tree of corridors,
+    # so all of its rock is a single connected piece. That is what makes the hand-on-wall
+    # rule work: following that one wall passes every corridor.
+    for seed in (1, 2, 3):
+        sim = load_sim_class(INFO)(SimContext("cpu", seed))
+        sim.set_param("scenario", "Maze")
+        assert _free_components(sim.rocks.mask == 1) == 1
+
+
+PURE_WALL_FOLLOWER = {"scenario": "Maze", "n_ants": 50, "variety": 0.0, "wander": 0.0,
+                      "deposit": 0.0, "food_cue": 0.0, "nest_cue": 0.0, "homing": 0.0,
+                      "navigators": False, "hug_release": 0.0, "hug_time": 20.0}
+
+
+def test_hand_on_wall_takes_every_ant_to_the_food_and_back():
+    # the limiting case of the model: no smells, no wander, never letting go of the wall
+    sim = load_sim_class(INFO)(SimContext("cpu", 1))
+    sim.apply_values(PURE_WALL_FOLLOWER)
+    n = len(sim.pos)
+    found = np.zeros(n, bool)
+    back = np.zeros(n, bool)
+    for k in range(200 * 60):
+        sim.advance(InputState())
+        if k % 30 == 0:
+            found |= sim.carry.numpy() == 1
+            near = np.linalg.norm(sim.pos.numpy() - sim.nest, axis=1) < 5.0
+            back |= found & near
+            if back.all():
+                break
+    assert found.all(), f"{int((~found).sum())} ants never reached the food"
+    assert back.all(), f"{int((~back).sum())} ants never came back to the nest room"
+
+
+def _in_rock(sim) -> int:
+    p = sim.pos.numpy()
+    ix, iy = (p[:, 0] / 0.5).astype(int), (p[:, 1] / 0.5).astype(int)
+    return int(sim.rocks.mask[iy, ix].sum())
+
+
+def _maze_run(seed: int, seconds: float):
+    sim = load_sim_class(INFO)(SimContext("cpu", seed))
+    maze = next(pr for pr in sim.PRESETS if pr.key == "maze")
+    sim.apply_values(maze.values)
+    n = len(sim.pos)
+    away = np.zeros(n, bool)
+    found = np.zeros(n, bool)
+    back = np.zeros(n, bool)
+    first = None
+    for k in range(int(seconds * 60)):
+        sim.advance(InputState())
+        if k % 30 == 0:
+            assert _in_rock(sim) == 0, "an ant walked into rock"
+            dn = np.linalg.norm(sim.pos.numpy() - sim.nest, axis=1)
+            away |= dn > 12
+            back |= away & (dn < 3.5)
+            found |= sim.carry.numpy() == 1
+            if first is None and sim.delivered.numpy()[0] > 0:
+                first = k / 60
+    return first, found | back
+
+
+def test_the_maze_is_solvable_and_every_ant_finds_its_way():
+    first, ok = _maze_run(1, 600)
+    assert first is not None and first < 300, "no food delivered within 300 s"
+    assert ok.mean() >= 0.99, f"only {ok.mean():.1%} of ants ever reached food or home"
+
+
+def test_the_maze_is_solvable_for_other_seeds():
+    for seed in (2, 3):
+        first, _ = _maze_run(seed, 300)
+        assert first is not None, f"seed {seed}: no food delivered within 300 s"
+
+
+# ------------------------------------------------------------------ no entry, quality
+def _set_field(sim, channel: int, values: np.ndarray) -> None:
+    f = sim.field.value.numpy()
+    f[channel] = values
+    sim.field.value = wp.array(f, dtype=float, device=sim.device)
+
+
+def test_frustrated_searchers_mark_no_entry_and_only_then():
+    for on in (True, False):
+        sim = load_sim_class(INFO)(SimContext("cpu", 6))
+        sim.set_param("noentry", on)
+        n = len(sim.pos)
+        _set_field(sim, 1, np.full(sim.field.value.shape[1:], 50.0, np.float32))  # on a trail
+        sim.frust = wp.array(np.full(n, 1e4, np.float32), dtype=float, device=sim.device)
+        sim.advance(InputState())
+        marks = float(sim.field.numpy()[2].sum())
+        assert (marks > 0) == on
+
+
+def test_no_entry_lowers_what_searchers_smell():
+    # S = ln(1 + sum c) - k_ne ln(1 + sum n): the host mirror uses the kernel's rule
+    sim = load_sim_class(INFO)(SimContext("cpu", 6))
+    field = np.zeros(sim.field.value.shape, np.float32)
+    field[1] = 9.0 / 9                        # sum over the 3x3 cells = 9 -> ln(10)
+    field[2] = 9.0 / 9
+    food = np.zeros(field.shape[1:], np.int32)
+    p = np.array([80.0, 45.0])
+    _, clean = sim._sense(p, 0.0, 0, field * np.array([1, 1, 0])[:, None, None], food)
+    _, marked = sim._sense(p, 0.0, 0, field, food)
+    k = sim.p.ne_weight
+    assert np.allclose(clean - marked, k * np.log(10.0), atol=1e-4)
+    _, loaded = sim._sense(p, 0.0, 1, field, food)   # loaded ants ignore no-entry
+    _, loaded_clean = sim._sense(p, 0.0, 1, field * np.array([1, 1, 0])[:, None, None], food)
+    assert np.allclose(loaded, loaded_clean)
+
+
+def test_rich_food_is_marked_more_strongly():
+    # delta c = q Q e^(-t_a / tau_a) dt: same ants, same step, only Q differs
+    totals = []
+    for q in (1.0, 2.5):
+        sim = load_sim_class(INFO)(SimContext("cpu", 6))
+        n = len(sim.pos)
+        sim.carry = wp.array(np.ones(n, np.int32), dtype=int, device=sim.device)
+        sim.carried_q = wp.array(np.full(n, q, np.float32), dtype=float, device=sim.device)
+        sim.advance(InputState())
+        totals.append(float(sim.field.numpy()[1].sum()))
+    assert np.isclose(totals[1] / totals[0], 2.5, rtol=0.02)
+
+
+def test_the_colony_chooses_the_richer_food():
+    sim = load_sim_class(INFO)(SimContext("cpu", 1))
+    sim.set_param("scenario", "Two foods")
+    rich = sim.quality_np > 1.0
+    before = sim.food.numpy().copy()
+    for _ in range(90 * 60):
+        sim.advance(InputState())
+    eaten = before - sim.food.numpy()
+    share = eaten[rich].sum() / max(eaten.sum(), 1)
+    assert eaten.sum() > 0 and share > 0.7, f"rich share {share:.2f}"

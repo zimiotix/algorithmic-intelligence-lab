@@ -59,16 +59,19 @@ uv run ailab --render-gpu nvidia                    # Linux hybrid laptops: draw
 
 - **Tools** on a hotbar (keys 1–9): hunt the fish, build rock and walls, drop food, lay
   cones, inspect one agent. Each chapter declares its own.
-- **Guide** (left): the tool in your hand, **experiments** that tick themselves off when
-  you manage them (each reveals the idea behind it), the controls, and a **Model vs.
-  nature** note on what the simulation simplifies.
-- **Inspector** (right): **Live Math** (the rules with the focus agent's numbers plugged
-  in, with a ✓ when a condition holds; every symbol is defined above its equation), the
-  overlays (Ctrl+1–9) and every parameter. Hover any parameter for what it does.
+- **Controls** (right): one-click **presets**, then **every parameter** as a slider,
+  grouped into sections that fold (only the first starts open), then the overlays
+  (Ctrl+1–9). No behaviour-shaping number is hidden in the code. Hover any parameter for
+  what it does.
+- **Guide** (left): the tool in your hand and **Live Math** (the rules with the focus
+  agent's numbers plugged in, with a ✓ when a condition holds; every symbol is defined
+  above its equation). Folded away until you want them: optional **goals** that tick
+  themselves off (each reveals the idea behind it), the keys, and a **Model vs. nature**
+  note on what the simulation simplifies. Folds remember how you left them.
 - **Focus mode** (Tab): only the simulation, nothing else. F11 for full screen. Both side
   panels can be resized or hidden.
 - **Responsive like a web page**: the window fits the screen it opens on; on narrower
-  windows the chapter list becomes a ☰ drawer, the Guide and Inspector slide over the
+  windows the chapter list becomes a ☰ drawer, the Guide and Controls slide over the
   view, the toolbar sheds secondary controls, and cards reflow.
 - **Chase camera** (racer): the view rides with the car and turns with it, so the arrow
   keys match the screen. V switches to the whole track.
@@ -98,6 +101,10 @@ Same seed + same input ⇒ the same run, bit for bit, on a given device. Simulat
 fixed time step, seeded random numbers, double-buffered GPU kernels and integer atomics
 (float atomics would make results depend on thread timing). `tests/test_chapter_contract.py`
 enforces this for **every** chapter automatically.
+
+Every launch (and every **New seed** click) picks a fresh random seed, so each run looks
+different; the seed is shown in the Lab toolbar. Type it back in, or start with
+`uv run ailab --seed 123456`, to replay that exact run.
 
 ### Memory systems
 

@@ -49,9 +49,9 @@ and direction) is its attack vector. The fish have senses:
 > overlay: gold fish are starving. Now hunt near the food. Hungry fish keep eating while
 > well-fed ones run.
 
-The **Lab** has a hotbar of tools at the bottom (keys **1–4**), a **Guide** on the left
-with experiments that tick themselves off when you manage them, and **Live Math** on the
-right: the rules with the white-ringed **focus fish**'s numbers plugged in. Use
+The **Lab** has a hotbar of tools at the bottom (keys **1–4**), **Controls** on the right
+(presets and every parameter), and a **Guide** on the left with **Live Math**: the rules
+with the white-ringed **focus fish**'s numbers plugged in, plus optional goals. Use
 **Inspect** (key 4) to choose which fish is explained.
 
 ## Model vs. nature

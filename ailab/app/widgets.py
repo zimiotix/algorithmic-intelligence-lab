@@ -25,8 +25,14 @@ from ..core.params import Param
 from . import theme
 from .responsive import Fold
 
-GREEK = {"tau": "τ", "phi": "φ", "Phi": "Φ", "theta": "θ", "omega": "ω", "sigma": "σ",
-         "delta": "δ", "alpha": "α", "dot": ""}
+GREEK = {
+    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "epsilon": "ε", "zeta": "ζ",
+    "eta": "η", "theta": "θ", "iota": "ι", "kappa": "κ", "lambda": "λ", "mu": "μ", "nu": "ν",
+    "xi": "ξ", "pi": "π", "rho": "ρ", "sigma": "σ", "tau": "τ", "upsilon": "υ", "phi": "φ",
+    "chi": "χ", "psi": "ψ", "omega": "ω", "Gamma": "Γ", "Delta": "Δ", "Theta": "Θ",
+    "Lambda": "Λ", "Xi": "Ξ", "Pi": "Π", "Sigma": "Σ", "Phi": "Φ", "Psi": "Ψ", "Omega": "Ω",
+    "dot": "",
+}
 
 
 def symbol_html(tex: str) -> str:

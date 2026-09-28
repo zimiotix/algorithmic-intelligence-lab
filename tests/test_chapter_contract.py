@@ -157,3 +157,14 @@ def test_presets_and_groups(info):
             for _ in range(10):
                 sim.advance(ScriptedInput().at(0, sim.dt))
         assert a.digest() == b.digest()
+
+
+@pytest.mark.parametrize("info", CHAPTERS, ids=lambda c: c.id)
+def test_parameter_symbols_show_as_symbols(info):
+    # the slider label turns \kappa into κ; an unknown command would show as plain "kappa"
+    import re
+
+    from ailab.app.widgets import GREEK
+    for p in load_sim_class(info).PARAMS:
+        unknown = [c for c in re.findall(r"\\([A-Za-z]+)", p.symbol) if c not in GREEK]
+        assert not unknown, f"{p.key}: symbol {p.symbol!r} uses {unknown}"

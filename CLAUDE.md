@@ -13,6 +13,10 @@
   enforce them, and every `Param` needs a `help` text (it is the hover card).
 - `PARAMS` grouped with `section(...)`, plus `PRESETS`; no magic constants in kernels
   (a behaviour-shaping number is a `Param`). The contract test checks presets.
+- Kernel randomness: `wp.rand_init(step_seed(seed, step), id)` (ailab.core.rng), never
+  `seed + step`. Keep Warp struct arguments small (split them): a ~35-field struct crashed
+  on CUDA only. Check new kernels on the GPU with `wp.config.verify_cuda = True`.
+- The app starts each launch with a fresh seed; `--seed N` replays a run.
 - Terms before equations: define symbols in words before each display equation.
 - Cross-platform: `encoding="utf-8"` on all text IO, app files via `ailab.core.paths`,
   headless GL via `snapshot.standalone_context()`. CI runs Ubuntu, Windows and macOS.

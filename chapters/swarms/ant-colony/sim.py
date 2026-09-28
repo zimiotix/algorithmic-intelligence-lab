@@ -38,14 +38,16 @@ from ailab.core.memory import (
     grid_inside,
 )
 from ailab.core.params import fmt
+from ailab.core.rng import step_seed
 from ailab.core.sandbox import ObstacleGrid, obstacle_at
 from ailab.render import palette as pal
 
 WIDTH, HEIGHT, CELL = 160.0, 90.0, 0.5
-HOME, FOOD = 0, 1
+HOME, FOOD, NOENTRY = 0, 1, 2      # pheromone channels
 NO_CLAIM = 2**31 - 1
-SCENARIOS = ("Open field", "Double bridge", "Maze")
-NAV_COLOR = "#c4b5fd"   # navigator ants: violet
+SCENARIOS = ("Open field", "Double bridge", "Maze", "Two foods")
+NAV_COLOR = "#8b5cf6"   # navigator ants: violet
+RICH_COLOR = "#fbbf24"  # rich food: gold
 
 
 @wp.struct
@@ -68,19 +70,37 @@ class Colony:
     nav_gain: float      # compass strength of a navigator
     nav_time: float      # how long it navigates before trusting smells again
     give_up: float       # out this long without reaching food or home: lost
+    hug_time: float      # how long an ant looks for a wall it has lost from its side
+    hug_gain: float      # how hard it turns back toward a lost wall (round corners)
+    feel_angle: float    # side feeler direction, from the heading toward the wall side
+    feel_dist: float     # side feeler reach
+    slide_step: float    # turning increments when searching for a free way along a wall
+    hug_release: float   # chance per second of letting go of a wall
     homing: float
     dt: float
     seed: int
 
 
+@wp.struct
+class Marks:
+    """The "no entry" signal (kept apart from Colony: Warp struct arguments stay small)."""
+    on: int              # "no entry" marks enabled
+    after: float         # following a food trail this long without food: frustrated
+    rate: float          # how much "no entry" a frustrated ant lays per second
+    weight: float        # how strongly searchers avoid "no entry"
+    trail: float         # the food-trail reading that counts as "on a trail"
+
+
 @wp.func
-def smell(P: Colony, g: Grid2D, value: wp.array3d(dtype=float), food: wp.array2d(dtype=int),
+def smell(P: Colony, M: Marks, g: Grid2D, value: wp.array3d(dtype=float), food: wp.array2d(dtype=int),
           q: wp.vec2, carrying: int) -> float:
     # Weber-Fechner: sensors respond to the logarithm of concentration, so a busy trail
     # never drowns out the direct smell of food or of the nest.
     s = float(0.0)
     if carrying == 0:
         s = wp.log(1.0 + field_sample3(value, 1, g, q))     # follow the food trail
+        if M.on == 1:                                       # ...but not into "no entry"
+            s -= M.weight * wp.log(1.0 + field_sample3(value, 2, g, q))
         c = grid_cell(g, q)
         for dy in range(-1, 2):
             for dx in range(-1, 2):
@@ -96,14 +116,22 @@ def smell(P: Colony, g: Grid2D, value: wp.array3d(dtype=float), food: wp.array2d
     return s
 
 
+@wp.func
+def heading(a: float) -> wp.vec2:
+    return wp.vec2(wp.cos(a), wp.sin(a))
+
+
 @wp.kernel
-def ant_step(P: Colony, g: Grid2D, pos: wp.array(dtype=wp.vec2), ang: wp.array(dtype=float),
+def ant_step(P: Colony, M: Marks, g: Grid2D, pos: wp.array(dtype=wp.vec2), ang: wp.array(dtype=float),
              carry: wp.array(dtype=int), timer: wp.array(dtype=float),
              value: wp.array3d(dtype=float), deposit: wp.array3d(dtype=wp.int32),
              food: wp.array2d(dtype=int), blocked: wp.array2d(dtype=wp.uint8),
              claims: wp.array2d(dtype=int), delivered: wp.array(dtype=int),
              wind: wp.array(dtype=float), nav: wp.array(dtype=float),
-             rescued: wp.array(dtype=int)):
+             rescued: wp.array(dtype=int), hug: wp.array(dtype=float),
+             lost_clock: wp.array(dtype=float), traits: wp.array(dtype=wp.vec4),
+             hit_d: wp.array(dtype=float), frust: wp.array(dtype=float),
+             carried_q: wp.array(dtype=float)):
     i = wp.tid()
     p = pos[i]
     a = ang[i]
@@ -111,65 +139,128 @@ def ant_step(P: Colony, g: Grid2D, pos: wp.array(dtype=wp.vec2), ang: wp.array(d
     tm = timer[i]
     w = wind[i]
     nv = nav[i]
+    hg = hug[i]
+    lc = lost_clock[i]
+    hd = hit_d[i]             # navigators: distance from home where they met this wall
+    fr = frust[i]             # seconds spent following a food trail without finding food
+    tr = traits[i]            # this ant's own speed, wander and trail loyalty, and wall side
+    side = tr[3]
+    v = P.speed * tr[0]
     rng = wp.rand_init(P.seed, i)
     to_nest = P.nest - p
     home_err = wp.sin(wp.atan2(to_nest[1], to_nest[0]) - a)
 
-    # nav > 0: navigating (seconds left); nav < 0: resting from a failed try (can't retrigger)
+    dist_home = wp.length(to_nest)
+    dir_home = to_nest / wp.max(dist_home, 1.0e-6)
+
+    # 1. sense: three sensors ahead-left, ahead, ahead-right
+    sa = P.sensor_angle
+    sd = P.sensor_dist
+    s_l = smell(P, M, g, value, food, p + heading(a + sa) * sd, c)
+    s_f = smell(P, M, g, value, food, p + heading(a) * sd, c)
+    s_r = smell(P, M, g, value, food, p + heading(a - sa) * sd, c)
+    sig = float(0.0)
+    if s_f < s_l or s_f < s_r:
+        if s_l > s_r:
+            sig = 1.0
+        elif s_r > s_l:
+            sig = -1.0
+
+    # 2. decide. nav > 0: navigating (seconds left); nav < 0: resting after a failed try
     turn = float(0.0)
     if nv > 0.0:
-        # a navigator ignores smells and walks home by its inner compass
-        turn = P.nav_gain * home_err
+        # a navigator ignores smells (a trail can lead into a dead end) and runs the Bug
+        # algorithm: compass toward home; blocked, it follows the wall (step 3) until home
+        # is in the clear and closer than where it met the wall
+        if hg > 0.0:
+            clear = not obstacle_at(blocked, g, p + dir_home * P.feel_dist)
+            if clear and dist_home < hd:
+                hg = 0.0                          # leave the wall, head home again
+        if hg <= 0.0:
+            turn = P.nav_gain * home_err
         nv = nv - P.dt
         if nv <= 0.0:
             nv = -P.nav_time                      # didn't make it home: trust smells a while
             w = 0.0
     else:
         nv = wp.min(nv + P.dt, 0.0)
-        # 1. sense: three sensors ahead-left, ahead, ahead-right
-        sa = P.sensor_angle
-        sd = P.sensor_dist
-        s_l = smell(P, g, value, food, p + wp.vec2(wp.cos(a + sa), wp.sin(a + sa)) * sd, c)
-        s_f = smell(P, g, value, food, p + wp.vec2(wp.cos(a), wp.sin(a)) * sd, c)
-        s_r = smell(P, g, value, food, p + wp.vec2(wp.cos(a - sa), wp.sin(a - sa)) * sd, c)
-
-        # 2. decide: turn toward the strongest smell, plus a little random wandering
-        if s_f < s_l or s_f < s_r:
-            if s_l > s_r:
-                turn = 1.0
-            elif s_r > s_l:
-                turn = -1.0
+        turn = tr[2] * sig                        # trail loyalty scales the pull of smells
+        # going in circles? recent smell-steering adds up; old turning fades. (Only smells:
+        # a mill is ants following each other's trail round and round.)
+        w = w * wp.exp(-P.dt / P.wind_tau) + turn * P.turn_rate * P.dt
         # path integration: loaded ants also feel the direction home (breaks "ant mills")
         if c == 1:
             turn = turn + P.homing * home_err
-        # going in circles? recent steering adds up; old turning fades
-        w = w * wp.exp(-P.dt / P.wind_tau) + turn * P.turn_rate * P.dt
-        lost = wp.abs(w) > 6.28318531 * P.nav_loops or tm > P.give_up
-        if P.nav_on == 1 and nv == 0.0 and lost:
-            nv = P.nav_time                       # lost: become a navigator
+        # lost: a loaded ant circling (an ant mill), or any ant out far too long
+        circling = c == 1 and wp.abs(w) > 6.28318531 * P.nav_loops
+        if P.nav_on == 1 and nv == 0.0 and (circling or lc > P.give_up):
+            nv = P.nav_time                       # lost: become a navigator, face home
             w = 0.0
-    a = a + turn * P.turn_rate * P.dt + (wp.randf(rng) - 0.5) * 2.0 * P.wander * wp.sqrt(P.dt)
+            hg = 0.0
+            a = wp.atan2(to_nest[1], to_nest[0])
 
-    # 3. act: move, or turn around at walls
-    step = wp.vec2(wp.cos(a), wp.sin(a)) * (P.speed * P.dt)
+    # 3. wall following (thigmotaxis): keep a wall at your side; if it disappears (an
+    #    outside corner), turn back toward it; now and then, let go
+    if hg > 0.0:
+        if obstacle_at(blocked, g, p + heading(a + side * P.feel_angle) * P.feel_dist):
+            hg = P.hug_time                       # the wall is still there
+        else:
+            turn = turn + side * P.hug_gain       # lost it: turn toward where it was
+        hg = hg - P.dt
+        if nv <= 0.0 and wp.randf(rng) < 1.0 - wp.exp(-P.hug_release * P.dt):
+            hg = -P.hug_time                      # let go, and don't grab a wall for a while
+    elif hg < 0.0:
+        hg = wp.min(hg + P.dt, 0.0)
+    a = a + turn * P.turn_rate * P.dt + (wp.randf(rng) - 0.5) * 2.0 * P.wander * tr[1] * wp.sqrt(P.dt)
+
+    # 4. act: move; at a wall, turn away from your wall side just enough to slide along it
+    step = heading(a) * (v * P.dt)
     if obstacle_at(blocked, g, p + step):
-        a = a + 3.14159265 + (wp.randf(rng) - 0.5) * 1.2
+        found = int(0)
+        tries = int(wp.ceil(3.14159265 / P.slide_step))
+        for k in range(1, tries + 1):
+            if found == 0:
+                b = a - side * P.slide_step * float(k)
+                if not obstacle_at(blocked, g, p + heading(b) * (v * P.dt)):
+                    a = b
+                    found = 1
+        if found == 0:
+            a = a + 3.14159265                    # boxed in: turn right round
+        else:
+            p = p + heading(a) * (v * P.dt)
+        if nv > 0.0 and hg <= 0.0:
+            hd = dist_home                        # a navigator meets a wall: remember where
+        if (hg >= 0.0 or nv > 0.0) and P.hug_time > 0.0:
+            hg = P.hug_time
     else:
         p = p + step
 
-    # 4. mark: strength fades with time since the ant left home / found food
+    # 5. mark: strength fades with time since the ant left home / found food
     ch = int(0)
     if c == 1:
         ch = 1
     if nv <= 0.0:                                 # navigators don't feed the loop
-        field_deposit(deposit, ch, g, p, P.deposit * wp.exp(-tm / P.trail_tau) * P.dt)
+        amount = P.deposit * wp.exp(-tm / P.trail_tau) * P.dt
+        if c == 1:
+            amount = amount * carried_q[i]        # better food, stronger trail
+        field_deposit(deposit, ch, g, p, amount)
+        # frustration: a searcher that follows a food trail for long without finding food
+        # marks the place "no entry", so others stop following that trail here
+        if c == 0 and wp.log(1.0 + field_sample3(value, 1, g, p)) > M.trail:
+            fr = fr + P.dt
+            if M.on == 1 and fr > M.after:
+                field_deposit(deposit, 2, g, p, M.rate * P.dt)
     tm = tm + P.dt
+    if hg <= 0.0:                                 # following a wall is progress, not lost
+        lc = lc + P.dt
 
     if wp.length(p - P.nest) < P.nest_r:
         if nv > 0.0:
             wp.atomic_add(rescued, 0, 1)
         nv = 0.0
         w = 0.0
+        lc = 0.0
+        fr = 0.0
         if c == 1:
             c = 0
             wp.atomic_add(delivered, 0, 1)
@@ -186,12 +277,19 @@ def ant_step(P: Colony, g: Grid2D, pos: wp.array(dtype=wp.vec2), ang: wp.array(d
     timer[i] = tm
     wind[i] = w
     nav[i] = nv
+    hug[i] = hg
+    lost_clock[i] = lc
+    hit_d[i] = hd
+    frust[i] = fr
 
 
 @wp.kernel
 def ant_pickup(g: Grid2D, pos: wp.array(dtype=wp.vec2), ang: wp.array(dtype=float),
                carry: wp.array(dtype=int), timer: wp.array(dtype=float),
-               food: wp.array2d(dtype=int), claims: wp.array2d(dtype=int)):
+               lost_clock: wp.array(dtype=float), nav: wp.array(dtype=float),
+               frust: wp.array(dtype=float), carried_q: wp.array(dtype=float),
+               food: wp.array2d(dtype=int), quality: wp.array2d(dtype=float),
+               claims: wp.array2d(dtype=int)):
     i = wp.tid()
     if carry[i] == 0:
         cell = grid_cell(g, pos[i])
@@ -199,7 +297,12 @@ def ant_pickup(g: Grid2D, pos: wp.array(dtype=wp.vec2), ang: wp.array(dtype=floa
             if claims[cell[1], cell[0]] == i:        # exactly one winner per cell
                 food[cell[1], cell[0]] = food[cell[1], cell[0]] - 1
                 carry[i] = 1
+                carried_q[i] = quality[cell[1], cell[0]]
                 timer[i] = 0.0
+                lost_clock[i] = 0.0
+                frust[i] = 0.0
+                if nav[i] > 0.0:
+                    nav[i] = 0.0
                 ang[i] = ang[i] + 3.14159265
 
 
@@ -217,12 +320,31 @@ def _capsule(X, Y, a, b, r):
     return (X - a[0] - ba[0] * t) ** 2 + (Y - a[1] - ba[1] * t) ** 2 < r * r
 
 
-def build_world(name: str, rng: np.random.Generator, nx: int, ny: int):
-    """Returns (blocked mask, food grid, nest position)."""
+def build_world(name: str, rng: np.random.Generator, nx: int, ny: int, rich: float = 2.5):
+    """Returns (blocked mask, food grid, food quality grid, nest position)."""
     X, Y = _centers(nx, ny)
     blocked = np.zeros((ny, nx), bool)
     food = np.zeros((ny, nx), np.int32)
-    if name == "Double bridge":
+    quality = np.ones((ny, nx), np.float32)
+    if name == "Two foods":
+        # Beckers, Deneubourg & Goss (1993): a fork with two equal branches to two feeders,
+        # one richer. Which branch is rich is up to the seed.
+        nest, fork = (16.0, 45.0), (64.0, 45.0)
+        blocked[:] = True
+        blocked &= ~_capsule(X, Y, nest, nest, 9.0)
+        blocked &= ~_capsule(X, Y, (24.0, 45.0), fork, 2.6)
+        rooms = [(140.0, 18.0), (140.0, 72.0)]
+        rich_side = int(rng.integers(2))
+        for k, room in enumerate(rooms):
+            bend = (104.0, room[1])
+            blocked &= ~_capsule(X, Y, fork, bend, 2.6)
+            blocked &= ~_capsule(X, Y, bend, room, 2.6)
+            blocked &= ~_capsule(X, Y, room, room, 8.0)
+            pile = _capsule(X, Y, room, room, 4.5)
+            food[pile] = 25
+            if k == rich_side:
+                quality[pile] = rich
+    elif name == "Double bridge":
         nest, target = (16.0, 45.0), (144.0, 45.0)
         blocked[:] = True
         for c in (nest, target):
@@ -273,7 +395,7 @@ def build_world(name: str, rng: np.random.Generator, nx: int, ny: int):
     blocked[0, :] = blocked[-1, :] = True
     blocked[:, 0] = blocked[:, -1] = True
     food[blocked] = 0
-    return blocked.astype(np.uint8), food, np.array(nest, np.float32)
+    return blocked.astype(np.uint8), food, quality, np.array(nest, np.float32)
 
 
 class Sim(Simulation):
@@ -292,6 +414,30 @@ class Sim(Simulation):
             Param("wander", "Wander", 1.5, 0.0, 6.0, 0.1,
                   "Random turning. Too little: no exploring. Too much: no trail following.",
                   "\\sigma"),
+            Param("variety", "Individual variety", 0.2, 0.0, 1.0, 0.05,
+                  "How different ants are from each other in speed, wander and trail "
+                  "loyalty. 0: identical copies. High: bold scouts and faithful followers.",
+                  "\\kappa", restart=True),
+        ),
+        *section(
+            "Walls",
+            Param("hug_time", "Wall following", 4.0, 0.0, 20.0, 0.5,
+                  "After touching a wall an ant keeps it at its side, and looks for it this "
+                  "long if it loses it (thigmotaxis). 0: it just slides off.", "T_w", "s"),
+            Param("hug_gain", "Corner pull", 1.0, 0.0, 3.0, 0.05,
+                  "How hard a wall-following ant turns back toward a wall it lost, so it "
+                  "goes round corners.", "g_w"),
+            Param("hug_release", "Letting go", 0.1, 0.0, 2.0, 0.05,
+                  "Chance per second of leaving a wall, so no ant circles a pillar forever.",
+                  "\\lambda_w", "1/s"),
+            Param("feel_angle", "Side feeler angle", 50.0, 10.0, 90.0, 1.0,
+                  "Where the ant feels for the wall at its side, measured from its heading.",
+                  "\\alpha_w", "deg"),
+            Param("feel_dist", "Side feeler reach", 1.2, 0.3, 4.0, 0.1,
+                  "How far to the side the ant can feel a wall.", "d_w"),
+            Param("slide_step", "Slide search step", 17.0, 5.0, 45.0, 1.0,
+                  "At a wall, the ant turns in steps of this size until the way along the "
+                  "wall is free. Big steps: jerky, wide turns.", "\\Delta_w", "deg"),
         ),
         *section(
             "Sensing",
@@ -318,21 +464,24 @@ class Sim(Simulation):
         ),
         *section(
             "Navigator ants",
-            Param("navigators", "Navigator ants", True,
-                  help="An ant that notices it is lost (circling, or out far too long) stops "
-                       "following smells and walks home by its inner compass (violet)."),
-            Param("nav_loops", "Lost after circling", 1.5, 0.5, 5.0, 0.25,
-                  "How many full circles of recent turning make an ant decide it is lost.",
+            Param("navigators", "Navigator ants", False,
+                  help="An ant that notices it is lost (circling with food, or out far too long) "
+                       "turns navigator (violet): compass toward home, and around walls in its "
+                       "way (the Bug algorithm from robotics)."),
+            Param("nav_loops", "Lost after circling", 4.0, 0.5, 10.0, 0.25,
+                  "How many full circles of recent turning make an ant carrying food decide "
+                  "it is lost (stuck in an ant mill).",
                   "n_{lost}", "turns"),
-            Param("give_up", "Lost after searching", 60.0, 5.0, 300.0, 5.0,
+            Param("give_up", "Lost after searching", 120.0, 5.0, 600.0, 5.0,
                   "An ant out this long without reaching food or home gives up and heads "
-                  "home, as real foragers do.", "T_{lost}", "s"),
+                  "home, as real foragers do. Time spent following a wall doesn't count.",
+                  "T_{lost}", "s"),
             Param("wind_tau", "Turning memory", 8.0, 0.5, 20.0, 0.5,
                   "How long an ant remembers its own turning. Long: slow, wide loops count "
                   "too.", "\\tau_w", "s"),
             Param("nav_gain", "Compass strength", 3.0, 0.5, 10.0, 0.1,
                   "How hard a navigator steers toward home.", "g_n"),
-            Param("nav_time", "Navigate for", 10.0, 1.0, 60.0, 1.0,
+            Param("nav_time", "Navigate for", 60.0, 5.0, 300.0, 5.0,
                   "How long a navigator ignores smells. If it isn't home by then (a wall in "
                   "the way), it follows smells again for as long before it can retry.",
                   "T_n", "s"),
@@ -341,7 +490,7 @@ class Sim(Simulation):
             "Pheromone",
             Param("deposit", "Pheromone per second", 1.0, 0.0, 5.0, 0.05,
                   "How much scent each ant lays. At 0 the colony has no shared memory.", "q"),
-            Param("trail_tau", "Ant memory", 20.0, 1.0, 120.0, 1.0,
+            Param("trail_tau", "Ant memory", 20.0, 1.0, 300.0, 1.0,
                   "Marks weaken with time since the ant left home or found food.",
                   "\\tau_a", "s"),
             Param("evap_tau", "Evaporation time", 40.0, 2.0, 300.0, 1.0,
@@ -349,27 +498,65 @@ class Sim(Simulation):
             Param("diffusion", "Diffusion", 1.0, 0.0, 12.0, 0.1,
                   "How fast pheromone spreads to neighbouring cells.", "D", "cells^2/s"),
         ),
+        *section(
+            "No-entry marks",
+            Param("noentry", "No-entry marks", True,
+                  help="Frustrated searchers (long on a food trail, no food) mark the spot "
+                       "with a repellent, as Pharaoh's ants do. Others then avoid that "
+                       "trail there (red in the overlay)."),
+            Param("ne_after", "Frustrated after", 30.0, 2.0, 300.0, 1.0,
+                  "Seconds a searcher follows a food trail without finding food before it "
+                  "starts marking no-entry. Too short: it marks good trails too.",
+                  "T_f", "s"),
+            Param("ne_rate", "No-entry per second", 1.0, 0.0, 5.0, 0.05,
+                  "How much repellent a frustrated ant lays.", "q_{ne}"),
+            Param("ne_weight", "No-entry strength", 1.0, 0.0, 5.0, 0.05,
+                  "How strongly searchers avoid no-entry marks when choosing a way.",
+                  "k_{ne}"),
+            Param("ne_tau", "No-entry fades over", 15.0, 1.0, 120.0, 1.0,
+                  "How long a no-entry mark lasts. Real ones fade faster than trails.",
+                  "\\tau_{ne}", "s"),
+            Param("ne_trail", "On a trail above", 0.5, 0.05, 3.0, 0.05,
+                  "The food-trail reading ln(1 + c) that counts as following a trail, for "
+                  "frustration.", "S_{trail}"),
+        ),
+        *section(
+            "Food",
+            Param("rich", "Rich food quality", 2.5, 1.0, 5.0, 0.1,
+                  "How much more strongly ants mark the trail from rich food than from "
+                  "ordinary food (quality 1). Used by Two foods and the Rich food tool.",
+                  "Q_{rich}", restart=True),
+        ),
     ]
     PRESETS = [
         Preset("default", "Default", {}, "The standard colony in an open field."),
         Preset("bridge", "Double bridge", {"scenario": "Double bridge"},
                "Two routes to food, one shorter. Watch the colony pick one."),
-        Preset("maze", "Maze", {"scenario": "Maze"}, "Food hidden behind walls."),
+        Preset("maze", "Maze", {"scenario": "Maze", "homing": 0.0, "trail_tau": 40.0,
+                                "evap_tau": 80.0, "hug_time": 8.0, "navigators": True},
+               "Food at the far end of a maze. Longer memories for a long route, walls "
+               "followed longer, no compass pulling ants into walls, and ants that give "
+               "up a fruitless search and head home (violet)."),
         Preset("forget", "Fast fading", {"evap_tau": 6.0},
                "Trails vanish quickly: the colony struggles to settle on a route."),
         Preset("stubborn", "Long memory", {"evap_tau": 300.0},
                "Trails last: the colony locks onto the first route it finds, even a bad one."),
         Preset("explore", "Explorers", {"wander": 4.5},
                "Restless ants find new food fast but lose trails."),
-        Preset("mill", "Ant mill", {"homing": 0.0, "navigators": False},
+        Preset("two", "Two foods", {"scenario": "Two foods"},
+               "Two piles at the same distance, one richer. Watch the colony pick one."),
+        Preset("same", "Identical ants", {"variety": 0.0},
+               "Every ant exactly alike, as in classic models. Compare with the default."),
+        Preset("mill", "Ant mill", {"homing": 0.0},
                "No sense of direction: loaded ants can circle their own trail forever."),
-        Preset("rescue", "Mill rescue", {"homing": 0.0},
+        Preset("rescue", "Mill rescue", {"homing": 0.0, "navigators": True},
                "Mills start to form, but ants that notice they are circling turn navigator "
                "(violet) and walk home."),
     ]
     OVERLAYS = [
         Overlay("home", "Home trail", True, "Laid by searching ants: points back to the nest."),
         Overlay("food_trail", "Food trail", True, "Laid by ants carrying food."),
+        Overlay("noentry", "No-entry marks", True, "Repellent laid by frustrated searchers."),
         Overlay("sensors", "Focus ant sensors", True, "What the focus ant smells."),
         Overlay("memory", "Ant memory", False, "Tint ants by time since they left home/food."),
         Overlay("ants", "Ants", True),
@@ -380,6 +567,9 @@ class Sim(Simulation):
         Tool("food", "Food", "food", "Click to drop a food pile", "Click to remove food",
              radius=3.0, tip="Put food far from the nest: scouts find it by chance, then a "
                              "trail builds up."),
+        Tool("rich", "Rich food", "food", "Click to drop rich food", "Click to remove food",
+             radius=3.0, tip="Ants mark the way to rich food more strongly. Drop it as far "
+                             "away as some ordinary food and watch the colony choose."),
         Tool("inspect", "Inspect", "inspect", "Click an ant to follow it",
              tip="The sensors overlay and Live Math explain this one ant."),
     ]
@@ -403,6 +593,22 @@ class Sim(Simulation):
                    "A scout finds it by chance; one loaded trip home lays the first trail, "
                    "and the colony switches over in a positive feedback loop.",
                    check="exp_newfood"),
+        Experiment("maze", "Solve the maze",
+                   "Pick the Maze preset and wait for 50 deliveries. Then try it with Wall "
+                   "following (T_w) at 0.",
+                   "No ant knows the maze. Ants that keep a wall at their side sweep the "
+                   "corridors instead of bouncing around, and their trails do the rest. "
+                   "Real ants follow edges too (thigmotaxis).", check="exp_maze"),
+        Experiment("rich", "Choose the richer food",
+                   "Pick the Two foods preset (gold = rich) and wait about a minute.",
+                   "Ants carrying rich food mark more strongly, so that trail wins even at "
+                   "the same distance. Lasius niger colonies choose this way (Beckers et al. "
+                   "1993); no ant compares the two piles.", check="exp_rich"),
+        Experiment("noentry", "Mark the dead ends",
+                   "Pick the Maze preset and watch for red no-entry marks.",
+                   "A frustrated searcher, long on a trail with no food, marks the spot. "
+                   "Others then stop following the trail there. Pharaoh's ants use such a "
+                   "repellent (Robinson et al. 2005).", check="exp_noentry"),
         Experiment("mill", "Make an ant mill",
                    "Pick the Ant mill preset: Path integration (h) at 0 and no navigators.",
                    "Following only each other's trail, ants can circle forever. Army ants "
@@ -411,39 +617,58 @@ class Sim(Simulation):
                    "Pick the Mill rescue preset and watch for violet navigator ants.",
                    "An ant can't see a mill from inside it, but it can notice that it keeps "
                    "turning the same way. That signal, which the loop can't fake, tells it to "
-                   "stop trusting the trail and use its compass.", check="exp_rescue"),
+                   "stop trusting the trail, head home by compass and go round walls in its "
+                   "way (the Bug algorithm).", check="exp_rescue"),
         Experiment("amnesia", "A colony without memory",
                    "Set Evaporation time (τ_e) to 2 s and compare deliveries.",
                    "When marks vanish faster than a round trip, no trail can form. "
                    "Stigmergy needs memory that outlasts the journey."),
     ]
     LIVE_MATH = [
-        LiveEq("smell", "What its three sensors smell", r"S = \ln\!\big(1 + \textstyle\sum c\big)"
-               r" + \text{cues}",
-               "S: one sensor's reading · c: pheromone in the 3×3 cells under it · "
-               "ln: natural logarithm (senses respond to ratios) · cues: food or nest nearby"),
+        LiveEq("smell", "What its three sensors smell",
+               r"S = \ln\!\big(1 + \textstyle\sum c\big) - k_{ne}\ln\!\big(1 + "
+               r"\textstyle\sum n\big) + \text{cues}",
+               "S: one sensor's reading · c: trail pheromone in the 3×3 cells under it · "
+               "ln: natural logarithm (senses respond to ratios) · k_ne: no-entry strength · "
+               "n: no-entry marks (searchers only) · cues: food or nest nearby"),
         LiveEq("turn", "Is the strongest smell ahead?", r"S_F \ge \max(S_L,\, S_R)",
                "S_L, S_F, S_R: readings of the left, front and right sensors"),
-        LiveEq("mark", "How strongly it marks", r"\Delta c = q\, e^{-t_a/\tau_a}\,\Delta t",
-               "Δc: pheromone laid this step · q: pheromone per second · t_a: time since it "
-               "left the nest or found food · τ_a: ant memory · Δt: one step (1/60 s)"),
+        LiveEq("mark", "How strongly it marks",
+               r"\Delta c = q\,Q\, e^{-t_a/\tau_a}\,\Delta t",
+               "Δc: pheromone laid this step · q: pheromone per second · Q: quality of the "
+               "food it carries (1 when searching) · t_a: time since it left the nest or "
+               "found food · τ_a: ant memory · Δt: one step (1/60 s)"),
         LiveEq("home", "The pull toward home",
                r"\Delta\theta = \omega\,h\,\sin(\theta_{nest} - \theta)\,\Delta t",
                "Δθ: extra turn this step · ω: turn rate · h: path-integration strength · "
                "θ_nest: direction of the nest · θ: its heading"),
-        LiveEq("lost", "Am I lost?", r"|W| > 2\pi\, n_{lost} \;\vee\; t_a > T_{lost}",
+        LiveEq("wall", "Is the wall still at my side?",
+               r"\text{wall at } \mathbf{x} + d_w\,\hat{\mathbf{u}}(\theta + s_i\,\alpha_w)"
+               r"\;\Rightarrow\; \text{keep it}",
+               "x: its position · d_w: feeler reach · û(·): a unit direction · θ: heading · "
+               "s_i: its wall side, +1 left or −1 right · α_w: feeler angle"),
+        LiveEq("traits", "This ant's personality",
+               r"v_i = v\,e^{\kappa z_1},\;\; \sigma_i = \sigma\,e^{\kappa z_2},\;\; "
+               r"f_i = e^{\kappa z_3}",
+               "v_i, σ_i: its own speed and wander · f_i: how loyally it follows trails · "
+               "κ: individual variety · z: its random draws, fixed at birth"),
+        LiveEq("lost", "Am I lost?", r"|W| > 2\pi\, n_{lost} \;\vee\; t_{lost} > T_{lost}",
                "W: how far it has turned lately, in radians (older turning fades over τ_w) · "
                "2π: one full circle · n_lost: circles before it counts as lost · ∨: or · "
-               "t_a: time since it left home or found food · T_lost: when it gives up"),
+               "t_lost: time since it last reached home or food, not counting time along "
+               "walls · T_lost: when it gives up"),
     ]
 
     def reset(self, seed: int) -> None:
         super().reset(seed)
         rng = np.random.default_rng(seed)
         dev = self.device
-        self.field = FieldMemory(self.world, CELL, channels=2, device=dev)
+        self.field = FieldMemory(self.world, CELL, channels=3, device=dev)
         nx, ny = self.field.nx, self.field.ny
-        blocked, food_np, self.nest = build_world(self.p.scenario, rng, nx, ny)
+        blocked, food_np, quality, self.nest = build_world(self.p.scenario, rng, nx, ny,
+                                                           self.p.rich)
+        self.quality_np = quality
+        self.quality = wp.array(quality, dtype=float, device=dev)
         self.rocks = ObstacleGrid(self.world, CELL, dev, border=True)
         self.rocks.set(blocked)
         self.rocks.protect(self.nest, 5.0)          # never bury the nest
@@ -466,6 +691,18 @@ class Sim(Simulation):
         self.wind = wp.zeros(n, dtype=float, device=dev)
         self.nav = wp.zeros(n, dtype=float, device=dev)
         self.rescued = wp.zeros(1, dtype=int, device=dev)
+        self.hug = wp.zeros(n, dtype=float, device=dev)
+        self.lost_clock = wp.zeros(n, dtype=float, device=dev)
+        self.hit_d = wp.zeros(n, dtype=float, device=dev)
+        self.frust = wp.zeros(n, dtype=float, device=dev)
+        self.carried_q = wp.ones(n, dtype=float, device=dev)
+        # personalities: speed, wander and trail loyalty factors e^(kappa z), z ~ N(0, 1)
+        # (kappa = 0: identical ants), and which side each keeps a wall on
+        k = float(self.p.variety)
+        self.trait_np = np.ones((n, 4), np.float32)
+        self.trait_np[:, :3] = np.exp(k * rng.standard_normal((n, 3)))
+        self.trait_np[:, 3] = np.where(rng.random(n) < 0.5, 1.0, -1.0)
+        self.traits = wp.array(self.trait_np, dtype=wp.vec4, device=dev)
         self.leg_phase = rng.uniform(0, 2 * np.pi, n).astype(np.float32)
         self.seed_jitter = rng.uniform(-0.3, 0.3, (ny, nx, 2)).astype(np.float32)
         self._rock_img = None
@@ -476,6 +713,7 @@ class Sim(Simulation):
 
     def _apply_field_params(self) -> None:
         self.field.tau[:] = self.p.evap_tau
+        self.field.tau[NOENTRY] = self.p.ne_tau        # "no entry" fades faster
         self.field.diffusion[:] = self.p.diffusion
 
     def on_param(self, key: str) -> None:
@@ -494,9 +732,18 @@ class Sim(Simulation):
         c.nav_loops, c.wind_tau = p.nav_loops, p.wind_tau
         c.nav_gain, c.nav_time = p.nav_gain, p.nav_time
         c.give_up = p.give_up
+        c.hug_time, c.hug_gain = p.hug_time, p.hug_gain
+        c.feel_angle, c.feel_dist = float(np.radians(p.feel_angle)), p.feel_dist
+        c.slide_step, c.hug_release = float(np.radians(p.slide_step)), p.hug_release
         c.dt = self.dt
-        c.seed = int((self.seed * 1_000_003 + self.steps) % (2**31 - 1))
+        c.seed = step_seed(self.seed, self.steps)
         return c
+
+    def _marks(self) -> Marks:
+        p, m = self.p, Marks()
+        m.on = 1 if p.noentry else 0
+        m.after, m.rate, m.weight, m.trail = p.ne_after, p.ne_rate, p.ne_weight, p.ne_trail
+        return m
 
     # ------------------------------------------------------------ interaction
     def _use_tools(self, inp: InputState) -> None:
@@ -505,17 +752,20 @@ class Sim(Simulation):
             if tool == "inspect" and button == "left":
                 xy = self.pos.numpy()
                 self.focus = int(np.argmin(np.sum((xy - np.asarray(at)) ** 2, axis=1)))
-            elif tool == "food":
+            elif tool in ("food", "rich"):
                 food = self.food.numpy()
                 disk = self.rocks.capsule(at, at, 3.0) & (self.rocks.mask == 0)
                 if button == "left":
                     food[disk] += 8
+                    self.quality_np[disk] = self.p.rich if tool == "rich" else 1.0
                     self.food_total += int(8 * disk.sum())
                     self.user_food |= disk
                     self.user_food_added += int(8 * disk.sum())
                 else:
                     food[disk] = 0
+                    self.quality_np[disk] = 1.0
                 self.food = wp.array(food, dtype=int, device=self.device)
+                self.quality = wp.array(self.quality_np, dtype=float, device=self.device)
         if tool == "wall" and inp.mouse is not None and {"left", "right"} & inp.buttons:
             building = "left" in inp.buttons
             before = self.rocks.mask.copy() if building else None
@@ -534,11 +784,14 @@ class Sim(Simulation):
         dev, g, f = self.device, self.field.grid, self.field
         self.claims.fill_(NO_CLAIM)
         wp.launch(ant_step, dim=len(self.pos),
-                  inputs=[self._colony(), g, self.pos, self.ang, self.carry, self.timer,
+                  inputs=[self._colony(), self._marks(), g, self.pos, self.ang, self.carry, self.timer,
                           f.value, f.deposit, self.food, self.rocks.blocked, self.claims,
-                          self.delivered, self.wind, self.nav, self.rescued], device=dev)
+                          self.delivered, self.wind, self.nav, self.rescued, self.hug,
+                          self.lost_clock, self.traits, self.hit_d, self.frust,
+                          self.carried_q], device=dev)
         wp.launch(ant_pickup, dim=len(self.pos),
-                  inputs=[g, self.pos, self.ang, self.carry, self.timer, self.food,
+                  inputs=[g, self.pos, self.ang, self.carry, self.timer, self.lost_clock,
+                          self.nav, self.frust, self.carried_q, self.food, self.quality,
                           self.claims], device=dev)
         f.update(self.dt)
         self._host = None
@@ -550,13 +803,15 @@ class Sim(Simulation):
                               field=self.field.numpy(), food=self.food.numpy(),
                               delivered=int(self.delivered.numpy()[0]),
                               wind=self.wind.numpy(), nav=self.nav.numpy(),
+                              hug=self.hug.numpy(), lost=self.lost_clock.numpy(),
+                              frust=self.frust.numpy(), cq=self.carried_q.numpy(),
                               rescued=int(self.rescued.numpy()[0]))
         return self._host
 
     def state_arrays(self):
         h = self._fetch()
-        return [h["pos"], h["ang"], h["carry"], h["field"], h["food"], h["nav"],
-                self.rocks.mask]
+        return [h["pos"], h["ang"], h["carry"], h["field"], h["food"], h["nav"], h["hug"],
+                h["lost"], h["frust"], h["cq"], self.trait_np, self.quality_np, self.rocks.mask]
 
     # ------------------------------------------------------------------ draw
     def draw(self, s) -> None:
@@ -578,6 +833,12 @@ class Sim(Simulation):
         pher[..., 2] = home * 1.6 + food_t * 0.20
         pher[..., 3] = np.clip(np.maximum(home, food_t), 0, 1)
         s.image(pher, b, additive=True)
+        if self.show.noentry and field[NOENTRY].max() > 1e-3:
+            ne = 1 - np.exp(-0.6 * field[NOENTRY])
+            red = np.zeros(field.shape[1:] + (4,), np.float32)
+            red[..., 0], red[..., 1], red[..., 2] = 1.0, 0.18, 0.22
+            red[..., 3] = np.clip(ne, 0, 0.85)
+            s.image(red, b)
 
         food = h["food"]
         fy, fx = np.nonzero(food > 0)
@@ -585,7 +846,10 @@ class Sim(Simulation):
             jit = self.seed_jitter[fy, fx]
             seeds = np.stack([(fx + 0.5 + jit[:, 0]) * CELL, (fy + 0.5 + jit[:, 1]) * CELL], 1)
             amt = np.clip(food[fy, fx] / 8.0, 0.25, 1.0)
-            s.circles(seeds, 0.20 * np.sqrt(amt) + 0.05, pal.rgba("#bef264", 1.0, 1.25))
+            rich = self.quality_np[fy, fx] > 1.0
+            col = np.where(rich[:, None], pal.rgba(RICH_COLOR, 1.0, 1.35),
+                           pal.rgba("#bef264", 1.0, 1.25)).astype(np.float32)
+            s.circles(seeds, 0.20 * np.sqrt(amt) + 0.05, col)
         s.image(self._rock_img, b, mode="mask")
         s.glow(self.nest, 7.0, pal.rgba(pal.AMBER, 0.25, 1.2))
         s.circles(self.nest, 3.0, pal.rgba("#0b0704"))
@@ -601,7 +865,7 @@ class Sim(Simulation):
             navs = h["nav"] > 0
             if navs.any():
                 col = col.copy()
-                col[navs] = pal.rgba(NAV_COLOR, 1.0, 1.5)
+                col[navs] = pal.rgba(NAV_COLOR, 1.0, 1.15)
             s.sprites("ant", pos, ang, (1.5, 0.8), col, self.leg_phase)
             idx = np.nonzero(carry == 1)[0]
             if len(idx):
@@ -626,6 +890,8 @@ class Sim(Simulation):
             x0, x1 = max(ix - 1, 0), min(ix + 2, field.shape[2])
             v = np.log1p(field[ch, y0:y1, x0:x1].sum())      # same rule as the kernel
             if c == 0:
+                if P.noentry:
+                    v -= P.ne_weight * np.log1p(field[NOENTRY, y0:y1, x0:x1].sum())
                 v += P.food_cue * (food[y0:y1, x0:x1] > 0).sum()
             else:
                 dn = np.hypot(*(q - self.nest))
@@ -651,8 +917,10 @@ class Sim(Simulation):
             HudItem("ants", f"{len(carry):,}"),
             HudItem("carrying food", f"{100 * carry.mean():.0f}%"),
             HudItem("delivered", f"{h['delivered']:,}", accent=True),
-            HudItem("navigating home", f"{int((h['nav'] > 0).sum()):,} · "
-                                       f"{h['rescued']:,} got home"),
+            HudItem("following walls", f"{100 * (h['hug'] > 0).mean():.0f}%"),
+            *([HudItem("navigating home", f"{int((h['nav'] > 0).sum()):,} · "
+                                          f"{h['rescued']:,} got home")]
+              if self.p.navigators else []),
             HudItem("food left", f"{left:,} / {self.food_total:,}"),
             HudItem("time", f"{self.t:.0f} s"),
         ]
@@ -674,9 +942,11 @@ class Sim(Simulation):
                                 "straight on: the best smell is ahead" if ahead
                                 else f"turn {side}, toward the stronger smell")
         ta = float(h["timer"][f])
-        rate = P.deposit * np.exp(-ta / P.trail_tau)
-        out["mark"] = LiveValue(f"t_a = {fmt(ta, 1)} s → {fmt(P.deposit)}·e^(−{fmt(ta, 1)}/"
-                                f"{fmt(P.trail_tau, 0)}) = {fmt(rate)} per s", None,
+        q = float(h["cq"][f]) if c else 1.0
+        rate = P.deposit * q * np.exp(-ta / P.trail_tau)
+        out["mark"] = LiveValue(f"t_a = {fmt(ta, 1)} s, Q = {fmt(q, 1)} → {fmt(P.deposit)}·"
+                                f"{fmt(q, 1)}·e^(−{fmt(ta, 1)}/{fmt(P.trail_tau, 0)}) = "
+                                f"{fmt(rate)} per s", None,
                                 "fresh from the nest or food: strong marks" if rate > 0.5 * P.deposit
                                 else "long trip so far: faint marks (long routes lose)")
         to = self.nest - p
@@ -695,19 +965,39 @@ class Sim(Simulation):
             out["home"] = LiveValue("not carrying food: no pull home", None,
                                     "searching ants go wherever the smell leads")
         wv, limit = float(h["wind"][f]), 2 * np.pi * P.nav_loops
-        text = (f"|W| = {fmt(abs(wv), 1)} of {fmt(limit, 1)} rad · t_a = {ta:.0f} of "
+        lc = float(h["lost"][f])
+        text = (f"|W| = {fmt(abs(wv), 1)} of {fmt(limit, 1)} rad · t_lost = {lc:.0f} of "
                 f"{P.give_up:.0f} s")
         if nav > 0:
             out["lost"] = LiveValue(f"was lost → navigating home, {nav:.0f} s left", True,
                                     "it noticed it was lost and switched to its compass")
         elif not P.navigators:
-            out["lost"] = LiveValue(text, None, "navigators are off: it follows smells "
-                                                "wherever they lead, even in circles")
+            out["lost"] = LiveValue(text, None, "navigators are off (switch them on under "
+                                                "Navigator ants): it just follows smells")
         elif nav < 0:
             out["lost"] = LiveValue(text, False, "its compass run failed (a wall?): trusting "
                                                  f"smells for {-nav:.0f} s before it retries")
         else:
             out["lost"] = LiveValue(text, False, "on track: it trusts the smells")
+        tr = self.trait_np[f]
+        out["traits"] = LiveValue(f"v_i = {fmt(P.speed * tr[0], 1)}   σ_i = "
+                                  f"{fmt(P.wander * tr[1])}   f_i = {fmt(tr[2])}   wall on "
+                                  f"its {'left' if tr[3] > 0 else 'right'}", None,
+                                  "a bold scout: fast, restless, loosely loyal"
+                                  if tr[0] > 1.1 and tr[1] > 1.1 and tr[2] < 1 else
+                                  "a faithful follower: sticks to trails" if tr[2] > 1.15 else
+                                  "an ordinary worker" if P.variety > 0 else
+                                  "variety is 0: every ant is identical")
+        hug = float(h["hug"][f])
+        side = "left" if tr[3] > 0 else "right"
+        if hug > 0:
+            out["wall"] = LiveValue(f"following a wall on its {side}: {hug:.1f} s of "
+                                    f"searching left if it loses it", True,
+                                    "thigmotaxis: the wall guides it along the corridor")
+        else:
+            out["wall"] = LiveValue(f"no wall at its {side}", None,
+                                    "letting go for a moment" if hug < 0 else
+                                    "open ground: it walks by smell alone")
         return out
 
     # ------------------------------------------------------------ experiments
@@ -722,6 +1012,19 @@ class Sim(Simulation):
         short = int((mid & (pos[:, 1] > 52)).sum())
         long_ = int((mid & (pos[:, 1] < 30)).sum())
         return short + long_ >= 40 and short >= 3 * long_
+
+    def exp_rich(self) -> bool:
+        if self.p.scenario != "Two foods" or self.t < 45:
+            return False
+        h = self._fetch()
+        loaded = h["carry"] == 1
+        return loaded.sum() >= 30 and (h["cq"][loaded] > 1.0).mean() >= 0.75
+
+    def exp_noentry(self) -> bool:
+        return self.p.noentry and float(self._fetch()["field"][NOENTRY].max()) > 2.0
+
+    def exp_maze(self) -> bool:
+        return self.p.scenario == "Maze" and self._fetch()["delivered"] >= 50
 
     def exp_rescue(self) -> bool:
         return self.p.navigators and self.p.homing < 0.05 and self._fetch()["rescued"] >= 25

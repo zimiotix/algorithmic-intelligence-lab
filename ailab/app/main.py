@@ -39,7 +39,8 @@ def _icon() -> QIcon:
     return icon
 
 
-def run_app(info: SystemInfo, device_pref: str, chapter: str | None, boot: bool = True) -> int:
+def run_app(info: SystemInfo, device_pref: str, chapter: str | None, boot: bool = True,
+            seed: int | None = None) -> int:
     _gl_format()
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv[:1])
@@ -95,7 +96,7 @@ def run_app(info: SystemInfo, device_pref: str, chapter: str | None, boot: bool 
         if os.environ.get("AILAB_CAPTURE_BOOT"):
             screen.grab().save(os.environ["AILAB_CAPTURE_BOOT"])
 
-    win = MainWindow(info, catalog)
+    win = MainWindow(info, catalog, seed=seed)
     win.show_fitted()
     if screen:
         screen.close()
